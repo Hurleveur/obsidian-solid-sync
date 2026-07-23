@@ -1,0 +1,9 @@
+{
+	"id": "solid-sync",
+	"name": "Solid Pod Sync",
+	"version": "0.1.0",
+	"minAppVersion": "1.6.6",
+	"description": "Sync a Solid pod container with a vault folder as native markdown notes.",
+	"author": "Alexandre",
+	"isDesktopOnly": false
+}
