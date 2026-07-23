@@ -72,6 +72,18 @@ A plugin is three files in `<vault>/.obsidian/plugins/solid-sync/`: `main.js`,
   [obsidian-releases](https://github.com/obsidianmd/obsidian-releases). Reviewed by the
   Obsidian team; `npm run lint` covers most of what they check.
 
+**Publishing to the store is the intent**, once a person has read the code
+end to end. It writes to a pod and deletes notes, so it should not go out to
+strangers on a machine review alone. Worth settling before submitting:
+
+- The `fetch` warnings under [Notes](#notes) — reviewers ask why `requestUrl`
+  is not used, so the answer belongs in the PR.
+- The **Log in** flow is Community Solid Server specific. Other servers need
+  credentials pasted by hand, which the settings UI should say plainly.
+- Sync behaviour under a second editor. The single-editor assumption holds for
+  a private pod and is stated, but a store listing reaches people who will
+  ignore it.
+
 ## Credentials
 
 **Log in** exchanges your pod account password, once, for a client-credentials
