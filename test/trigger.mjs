@@ -18,12 +18,18 @@ assert.equal(isSyncTrigger('team/alexandre/tasks.md', F, false), false);
 assert.equal(isSyncTrigger(`${F}x/note.md`, F, false), false, 'prefix is not a match');
 assert.equal(isSyncTrigger(F, F, false), false, 'the folder itself is not a note');
 
-// Non-notes are ignored.
-assert.equal(isSyncTrigger(`${F}/image.png`, F, false), false);
+// Attachments sync too, so they trigger a run like any other file.
+assert.equal(isSyncTrigger(`${F}/image.png`, F, false), true);
+assert.equal(isSyncTrigger(`${F}/doc.pdf`, F, false), true);
 
-// Conflict copies are local scratch and must never start a sync.
+// Conflict copies are local scratch and must never start a sync, whatever kind
+// of file they are copies of.
 assert.equal(
 	isSyncTrigger(`${F}/note (pod conflict 2026-07-23T10-19-29-517Z).md`, F, false),
+	false,
+);
+assert.equal(
+	isSyncTrigger(`${F}/image (pod conflict 2026-07-23T10-19-29-517Z).png`, F, false),
 	false,
 );
 

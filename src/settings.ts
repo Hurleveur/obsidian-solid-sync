@@ -10,6 +10,8 @@ export interface SolidSyncSettings {
 	pushDeletions: boolean;
 	syncOnStartup: boolean;
 	syncOnChange: boolean;
+	/** Files larger than this are left alone on both sides. 0 disables the limit. */
+	maxFileMB: number;
 }
 
 export const DEFAULT_SETTINGS: SolidSyncSettings = {
@@ -20,6 +22,7 @@ export const DEFAULT_SETTINGS: SolidSyncSettings = {
 	pushDeletions: false,
 	syncOnStartup: false,
 	syncOnChange: false,
+	maxFileMB: 10,
 };
 
 /** Asks for pod account login once, to mint client credentials. Password is not stored. */
@@ -188,6 +191,24 @@ export class SolidSyncSettingTab extends PluginSettingTab {
 					.setValue(this.plugin.settings.pushDeletions)
 					.onChange((v) => this.set('pushDeletions', v)),
 			);
+
+		new Setting(containerEl)
+			.setName('Maximum file size (MB)')
+			.setDesc(
+				'Bigger files are reported as skipped and left untouched on both sides. 0 removes the limit.',
+			)
+			.addText((t) => {
+				t.inputEl.type = 'number';
+				t.inputEl.min = '0';
+				t.setValue(String(this.plugin.settings.maxFileMB)).onChange((v) => {
+					const n = Number(v);
+					// A blank or nonsense box must not silently mean "no limit".
+					return this.set(
+						'maxFileMB',
+						Number.isFinite(n) && n >= 0 ? n : DEFAULT_SETTINGS.maxFileMB,
+					);
+				});
+			});
 
 		new Setting(containerEl).setName('Sync on startup').addToggle((t) =>
 			t

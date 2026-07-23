@@ -35,11 +35,63 @@ interface Report {
 	skipped: string[];
 }
 
-const BINARY = /^(image|audio|video|font)\//;
+/**
+ * How a pod resource is represented in the vault.
+ *  note    — markdown, stored verbatim
+ *  wrapped — RDF and other pod text, fenced inside a read-only note
+ *  raw     — everything else (images, PDFs, HTML, audio), copied byte for byte
+ */
+type Kind = 'note' | 'wrapped' | 'raw';
+
+/** Pod text worth reading as source rather than as an opaque attachment. */
+const WRAPPED =
+	/^(text\/(turtle|plain)|application\/((ld\+)?json|n-triples|n-quads|trig|rdf\+xml))$/;
+
+const EXTENSION = /\.[a-z0-9]+$/i;
+
+function classify(r: PodResource, rel: string): Kind {
+	if (r.contentType === 'text/markdown' || rel.endsWith('.md')) return 'note';
+	// A resource with no extension is a pod RDF resource (profile/card and the
+	// like), even when the server declines to say so.
+	if (WRAPPED.test(r.contentType) || !EXTENSION.test(rel)) return 'wrapped';
+	return 'raw';
+}
+
+const MIME: Record<string, string> = {
+	md: 'text/markdown',
+	txt: 'text/plain',
+	html: 'text/html',
+	htm: 'text/html',
+	css: 'text/css',
+	csv: 'text/csv',
+	json: 'application/json',
+	ttl: 'text/turtle',
+	pdf: 'application/pdf',
+	png: 'image/png',
+	jpg: 'image/jpeg',
+	jpeg: 'image/jpeg',
+	gif: 'image/gif',
+	webp: 'image/webp',
+	avif: 'image/avif',
+	bmp: 'image/bmp',
+	svg: 'image/svg+xml',
+	mp3: 'audio/mpeg',
+	wav: 'audio/wav',
+	m4a: 'audio/mp4',
+	ogg: 'audio/ogg',
+	flac: 'audio/flac',
+	mp4: 'video/mp4',
+	webm: 'video/webm',
+	mov: 'video/quicktime',
+	mkv: 'video/x-matroska',
+};
+
+const mimeOf = (path: string) =>
+	MIME[path.split('.').pop()?.toLowerCase() ?? ''] ?? 'application/octet-stream';
 
 /**
  * Whether a vault event should schedule a sync. Kept separate from the timer
- * plumbing so the rules stay testable: only notes inside the synced folder count,
+ * plumbing so the rules stay testable: only files inside the synced folder count,
  * conflict copies are local scratch, and the plugin's own writes must not
  * retrigger it while a run is in flight.
  */
@@ -49,21 +101,21 @@ export function isSyncTrigger(
 	busy: boolean,
 ): boolean {
 	if (busy || !folder) return false;
-	if (!path.startsWith(`${folder}/`) || !path.endsWith('.md')) return false;
+	if (!path.startsWith(`${folder}/`)) return false;
 	return !CONFLICT_COPY.test(path);
 }
 
 /** Conflict copies live in the synced folder but are local scratch — never pushed. */
-const CONFLICT_COPY = / \(pod conflict [^)]*\)\.md$/;
+const CONFLICT_COPY = / \(pod conflict [^)]*\)(\.[^./]+)?$/;
 
-const conflictPath = (path: string, podModified: string) =>
-	path.replace(
-		/\.md$/,
-		` (pod conflict ${podModified.replace(/[:.]/g, '-') || 'unknown'}).md`,
-	);
-
-const isMarkdown = (r: PodResource) =>
-	r.contentType === 'text/markdown' || r.url.endsWith('.md');
+/** Tag goes before the extension, so the copy stays the same kind of file. */
+function conflictPath(path: string, podModified: string): string {
+	const tag = ` (pod conflict ${podModified.replace(/[:.]/g, '-') || 'unknown'})`;
+	const dot = path.lastIndexOf('.');
+	return dot > path.lastIndexOf('/')
+		? path.slice(0, dot) + tag + path.slice(dot)
+		: path + tag;
+}
 
 const fence = (contentType: string) =>
 	({ 'text/turtle': 'turtle', 'application/ld+json': 'json' })[contentType] ??
@@ -86,21 +138,27 @@ function wrapNonMarkdown(r: PodResource, body: string): string {
 	].join('\n');
 }
 
-async function writeNote(vault: Vault, path: string, content: string) {
+async function writeFile(
+	vault: Vault,
+	path: string,
+	content: string | ArrayBuffer,
+) {
 	const dir = path.slice(0, path.lastIndexOf('/'));
 	if (dir && !(await vault.adapter.exists(dir))) {
 		await vault.createFolder(dir);
 	}
+	const text = typeof content === 'string';
 	const existing = vault.getFileByPath(path);
 	if (existing) {
-		await vault.modify(existing, content);
+		if (text) await vault.modify(existing, content);
+		else await vault.modifyBinary(existing, content);
 		return existing;
 	}
-	return vault.create(path, content);
+	return text ? vault.create(path, content) : vault.createBinary(path, content);
 }
 
 export async function runSync(plugin: SolidSyncPlugin): Promise<string> {
-	const { podUrl, folder, clientId, clientSecret, pushDeletions } =
+	const { podUrl, folder, clientId, clientSecret, pushDeletions, maxFileMB } =
 		plugin.settings;
 	if (!podUrl || !folder) throw new Error('Set the pod URL and vault folder first.');
 
@@ -123,30 +181,47 @@ export async function runSync(plugin: SolidSyncPlugin): Promise<string> {
 	};
 
 	// --- gather both sides, keyed by vault path -------------------------------
-	const { resources, unreadable } = await walk(fetcher, root);
-	const remote = new Map<string, PodResource>();
-	for (const r of resources) {
-		if (BINARY.test(r.contentType)) {
-			report.skipped.push(`${r.url} (${r.contentType})`);
-			continue;
+	// Too big to move, on either side. Such a path is left out of the whole
+	// decision below: not synced, but not read as a deletion either, so neither
+	// copy is touched.
+	const limit = Number(maxFileMB) > 0 ? Number(maxFileMB) * 1024 * 1024 : 0;
+	const oversize = new Set<string>();
+	const tooBig = (path: string, bytes: number, where: string) => {
+		// Written as "not over" so an unknown size never blocks a sync.
+		if (!limit || !(bytes > limit)) return false;
+		if (!oversize.has(path)) {
+			oversize.add(path);
+			report.skipped.push(
+				`${path} (${(bytes / 1024 / 1024).toFixed(1)} MB ${where}, over the ${maxFileMB} MB limit)`,
+			);
 		}
-		// Every note must end in .md or the vault will not see it as a note —
-		// and an invisible note reads as "deleted locally" on the next sync.
+		return true;
+	};
+
+	const { resources, unreadable } = await walk(fetcher, root);
+	const remote = new Map<string, { r: PodResource; kind: Kind }>();
+	for (const r of resources) {
 		const rel = decodeURIComponent(r.url.slice(root.length));
-		const path = `${base}/${rel.endsWith('.md') ? rel : `${rel}.md`}`;
+		const kind = classify(r, rel);
+		// A note must end in .md or the vault will not see it as a note — and an
+		// invisible note reads as "deleted locally" on the next sync. Attachments
+		// keep their own name, which is what the embed link in a note points at.
+		const path = `${base}/${kind === 'raw' || rel.endsWith('.md') ? rel : `${rel}.md`}`;
+		if (tooBig(path, r.size, 'on pod')) continue;
 		const clash = remote.get(path);
 		if (clash) {
-			report.skipped.push(`${r.url} (same note name as ${clash.url})`);
+			report.skipped.push(`${r.url} (same name as ${clash.r.url})`);
 			continue;
 		}
-		remote.set(path, r);
+		remote.set(path, { r, kind });
 	}
 
 	const local = new Map<string, TFile>();
-	for (const file of vault.getMarkdownFiles()) {
+	for (const file of vault.getFiles()) {
 		if (
 			file.path.startsWith(`${base}/`) &&
-			!CONFLICT_COPY.test(file.path)
+			!CONFLICT_COPY.test(file.path) &&
+			!tooBig(file.path, file.stat.size, 'in the vault')
 		) {
 			local.set(file.path, file);
 		}
@@ -155,7 +230,7 @@ export async function runSync(plugin: SolidSyncPlugin): Promise<string> {
 	// A renamed or unmounted folder makes every note look deleted at once. Refuse to
 	// mirror that onto the pod — one wrong sync should not be able to empty it.
 	const missingLocally = Object.keys(state).filter(
-		(p) => remote.has(p) && !local.has(p),
+		(p) => remote.has(p) && !local.has(p) && !oversize.has(p),
 	);
 	const massDeletion =
 		missingLocally.length > 3 &&
@@ -168,22 +243,24 @@ export async function runSync(plugin: SolidSyncPlugin): Promise<string> {
 		...local.keys(),
 		...Object.keys(state),
 	])) {
-		const r = remote.get(path);
+		if (oversize.has(path)) continue;
+		const entry = remote.get(path);
+		const r = entry?.r;
 		const f = local.get(path);
 		const prev = state[path];
 
-		if (r && f) {
+		if (entry && r && f) {
 			const podChanged = !prev || prev.pod !== r.modified;
 			const localChanged = !prev || prev.local !== f.stat.mtime;
 			if (podChanged && localChanged) {
-				const podCopy = await readRemote(fetcher, r);
+				const podCopy = await readRemote(fetcher, r, entry.kind);
 				if (podCopy === null) {
 					report.skipped.push(`${path} (no read access)`);
 					continue;
 				}
 				// Named after the pod revision, so repeated syncs refresh one copy
 				// instead of breeding a new file every run.
-				await writeNote(vault, conflictPath(path, r.modified), podCopy);
+				await writeFile(vault, conflictPath(path, r.modified), podCopy);
 				// Both versions are now on disk, so stop re-reporting: mark each
 				// side as seen. The note keeps its local text, the pod keeps its
 				// own, and whichever the user edits next wins normally.
@@ -191,11 +268,11 @@ export async function runSync(plugin: SolidSyncPlugin): Promise<string> {
 					url: r.url,
 					pod: r.modified,
 					local: f.stat.mtime,
-					readOnly: !isMarkdown(r),
+					readOnly: entry.kind === 'wrapped',
 				};
 				report.conflicts.push(path);
 			} else if (podChanged) {
-				await pull(vault, fetcher, r, path, state, report);
+				await pull(vault, fetcher, entry, path, state, report);
 			} else if (localChanged) {
 				if (prev?.readOnly || !authenticated) {
 					report.skipped.push(`${path} (local edit, read-only)`);
@@ -205,7 +282,7 @@ export async function runSync(plugin: SolidSyncPlugin): Promise<string> {
 					report.pushed++;
 				}
 			}
-		} else if (r && !f) {
+		} else if (entry && r && !f) {
 			if (prev) {
 				// Deleted locally since the last sync.
 				if (!pushDeletions || !authenticated || massDeletion) {
@@ -220,9 +297,9 @@ export async function runSync(plugin: SolidSyncPlugin): Promise<string> {
 					report.deletedRemote++;
 				}
 			} else {
-				await pull(vault, fetcher, r, path, state, report);
+				await pull(vault, fetcher, entry, path, state, report);
 			}
-		} else if (!r && f) {
+		} else if (!entry && f) {
 			if (prev) {
 				// Deleted on the pod since the last sync — recoverable from trash.
 				await plugin.app.fileManager.trashFile(f);
@@ -271,32 +348,34 @@ export async function runSync(plugin: SolidSyncPlugin): Promise<string> {
 async function readRemote(
 	fetcher: Fetcher,
 	r: PodResource,
-): Promise<string | null> {
+	kind: Kind,
+): Promise<string | ArrayBuffer | null> {
 	const res = await fetcher(r.url);
 	if (!res.ok) return null;
+	if (kind === 'raw') return res.arrayBuffer();
 	const body = await res.text();
-	return isMarkdown(r) ? body : wrapNonMarkdown(r, body);
+	return kind === 'note' ? body : wrapNonMarkdown(r, body);
 }
 
 async function pull(
 	vault: Vault,
 	fetcher: Fetcher,
-	r: PodResource,
+	{ r, kind }: { r: PodResource; kind: Kind },
 	path: string,
 	state: SyncState,
 	report: Report,
 ) {
-	const content = await readRemote(fetcher, r);
+	const content = await readRemote(fetcher, r, kind);
 	if (content === null) {
 		report.skipped.push(`${r.url} (no read access)`);
 		return;
 	}
-	const file = await writeNote(vault, path, content);
+	const file = await writeFile(vault, path, content);
 	state[path] = {
 		url: r.url,
 		pod: r.modified,
 		local: file.stat.mtime,
-		readOnly: !isMarkdown(r),
+		readOnly: kind === 'wrapped',
 	};
 	report.pulled++;
 }
@@ -308,10 +387,14 @@ async function push(
 	url: string,
 	state: SyncState,
 ) {
+	const type = mimeOf(file.path);
 	const res = await fetcher(url, {
 		method: 'PUT',
-		headers: { 'content-type': 'text/markdown' },
-		body: await vault.read(file),
+		headers: { 'content-type': type },
+		body:
+			type === 'text/markdown'
+				? await vault.read(file)
+				: await vault.readBinary(file),
 	});
 	if (!res.ok) throw new Error(`${res.status} writing ${url}`);
 	state[file.path] = {

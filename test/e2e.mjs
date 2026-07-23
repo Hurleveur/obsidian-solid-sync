@@ -28,6 +28,7 @@ const plugin = {
 		clientSecret: SECRET ?? '',
 		pushDeletions: true,
 		syncOnStartup: false,
+		maxFileMB: 10,
 	},
 	state: {},
 	saveState: async () => {},
@@ -112,6 +113,54 @@ await put('e2e-local.md', '# edited on pod\n');
 await runSync(plugin);
 assert.equal(read('Pod/e2e-local.md'), '# edited on pod\n');
 ok('remote edit pulled');
+
+// 5b. attachments travel as bytes, both ways -------------------------------
+// A 1x1 PNG: small, but a real one — a text round trip would corrupt it.
+const png = Buffer.from(
+	'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+	'base64',
+);
+await put('e2e-pic.png', png, 'image/png');
+await put('e2e-page.html', '<h1>hi</h1>\n', 'text/html');
+await runSync(plugin);
+assert.deepEqual(fs.readFileSync(path.join(root, 'Pod/e2e-pic.png')), png);
+ok('pod image pulled byte for byte, keeping its name');
+assert.equal(read('Pod/e2e-page.html'), '<h1>hi</h1>\n');
+ok('html pulled as a file, not fenced into a note');
+
+fs.writeFileSync(path.join(root, 'Pod/e2e-doc.pdf'), png); // bytes are bytes
+await runSync(plugin);
+const pdf = await fetcher(new URL('e2e-doc.pdf', POD).href);
+assert.equal(pdf.headers.get('content-type')?.split(';')[0], 'application/pdf');
+assert.deepEqual(Buffer.from(await pdf.arrayBuffer()), png);
+ok('local attachment pushed with the right content type');
+assert.match(await runSync(plugin), /^0 pulled, 0 pushed/);
+ok('attachments do not bounce back on the next run');
+
+// 5c. the size limit skips without deleting either copy ---------------------
+// One byte, so both the pod image and a fresh local file are over it.
+plugin.settings.maxFileMB = 1 / (1024 * 1024);
+write('Pod/e2e-big-local.md', '# too big to push\n');
+const limited = await runSync(plugin);
+assert.match(limited, /skipped/);
+assert.equal(
+	(await fetcher(new URL('e2e-big-local.md', POD).href)).status,
+	404,
+	'oversized local file is not pushed',
+);
+assert.ok(
+	fs.existsSync(path.join(root, 'Pod/e2e-pic.png')),
+	'oversized pod file already in the vault is left alone, not trashed',
+);
+assert.equal(
+	(await fetcher(new URL('e2e-pic.png', POD).href)).status,
+	200,
+	'oversized pod file is not deleted either',
+);
+ok('over the size limit: skipped on both sides, nothing removed');
+fs.unlinkSync(path.join(root, 'Pod/e2e-big-local.md'));
+plugin.settings.maxFileMB = 10;
+await runSync(plugin);
 
 // 6. read-only note is never pushed ----------------------------------------
 write('Pod/e2e-data.ttl.md', 'tampered\n');
@@ -200,5 +249,8 @@ ok('a wiped folder does not empty the pod');
 await del('e2e-noext');
 await del('e2e-keep.md');
 await del('e2e-data.ttl');
+await del('e2e-pic.png');
+await del('e2e-page.html');
+await del('e2e-doc.pdf');
 fs.rmSync(root, { recursive: true, force: true });
 console.log('\nall checks passed');

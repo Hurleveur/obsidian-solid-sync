@@ -31,7 +31,11 @@ export class Vault {
 	}
 	file(p) {
 		const st = fs.statSync(this.abs(p));
-		return { path: p, stat: { mtime: st.mtimeMs }, extension: 'md' };
+		return {
+			path: p,
+			stat: { mtime: st.mtimeMs, size: st.size },
+			extension: path.extname(p).slice(1),
+		};
 	}
 	async createFolder(p) {
 		fs.mkdirSync(this.abs(p), { recursive: true });
@@ -50,18 +54,31 @@ export class Vault {
 	async read(f) {
 		return fs.readFileSync(this.abs(f.path), 'utf8');
 	}
-	getMarkdownFiles() {
+	async createBinary(p, data) {
+		return this.create(p, Buffer.from(data));
+	}
+	async modifyBinary(f, data) {
+		fs.writeFileSync(this.abs(f.path), Buffer.from(data));
+	}
+	async readBinary(f) {
+		const b = fs.readFileSync(this.abs(f.path));
+		return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
+	}
+	getFiles(filter = () => true) {
 		const out = [];
 		const walk = (dir) => {
 			if (!fs.existsSync(this.abs(dir))) return;
 			for (const e of fs.readdirSync(this.abs(dir), { withFileTypes: true })) {
 				const rel = dir ? `${dir}/${e.name}` : e.name;
 				if (e.isDirectory()) walk(rel);
-				else if (e.name.endsWith('.md')) out.push(this.file(rel));
+				else if (filter(e.name)) out.push(this.file(rel));
 			}
 		};
 		walk('');
 		return out;
+	}
+	getMarkdownFiles() {
+		return this.getFiles((n) => n.endsWith('.md'));
 	}
 	trashed = [];
 	trash(f) {

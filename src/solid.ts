@@ -12,6 +12,8 @@ export interface PodResource {
 	isContainer: boolean;
 	modified: string;
 	contentType: string;
+	/** Bytes, or 0 when the server does not publish it. */
+	size: number;
 }
 
 const b64url = (bytes: Uint8Array | string): string => {
@@ -185,6 +187,7 @@ export async function createClientCredentials(
 const IANA = 'http://www.w3.org/ns/iana/media-types/';
 const LDP_CONTAINS = 'http://www.w3.org/ns/ldp#contains';
 const DC_MODIFIED = 'http://purl.org/dc/terms/modified';
+const POSIX_SIZE = 'http://www.w3.org/ns/posix/stat#size';
 
 type JsonLdNode = Record<string, unknown> & { '@id'?: string };
 
@@ -207,10 +210,16 @@ function describe(graph: JsonLdNode[], url: string): PodResource {
 	const modified = collect(graph, url, DC_MODIFIED)[0] as
 		| { '@value'?: string }
 		| undefined;
+	const size = collect(graph, url, POSIX_SIZE)[0] as
+		| { '@value'?: string }
+		| undefined;
 	return {
 		url,
 		isContainer: url.endsWith('/'),
 		modified: modified?.['@value'] ?? '',
+		// Absent on servers that do not publish it — 0 then means "unknown", and
+		// an unknown size must never look oversized.
+		size: Number(size?.['@value'] ?? 0),
 		contentType: mediaType
 			? mediaType.slice(IANA.length).replace(/#Resource$/, '')
 			: '',

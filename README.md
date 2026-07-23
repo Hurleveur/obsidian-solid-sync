@@ -23,18 +23,23 @@ content negotiation, so no `@inrupt/*` client and no RDF parser are bundled.
 | **Sync now** — ribbon icon, command palette, or the settings button | Always available |
 | Right after a successful login | Always |
 | **Sync on startup** — on plugin load, not periodic | Off |
-| **Sync after changes** — about 10 seconds after you add, edit, rename or delete a note in the folder, once a burst of edits settles | Off |
+| **Sync after changes** — about 10 seconds after you add, edit, rename or delete a file in the folder, once a burst of edits settles | Off |
 
 There is no polling. Pod-side changes arrive on the next sync, so leave **Sync after changes** on if you edit from more than one place.
 
 ## How it works
 
 - `.md` resources sync both ways, byte for byte, with no injected frontmatter.
+- Attachments — images, PDFs, HTML, audio, video, anything else with an extension —
+  sync both ways as bytes, keeping their own filename, so `![[picture.png]]` in a note
+  resolves on every machine. Anything over the size limit — 10 MB by default,
+  settable, 0 to disable — is reported as skipped and left untouched on both sides,
+  never mistaken for a deletion.
 - Other text resources (turtle, JSON-LD, plain text) are pulled read-only into a note
   with the source fenced and `solid-url` in the properties. Local edits to those are
-  never pushed. Binary resources are skipped.
-- Resources without a `.md` extension still become `<name>.md` notes — a pod's own
-  `README` is stored exactly this way.
+  never pushed.
+- Resources without an extension become `<name>.md` notes — a pod's own `README` is
+  stored exactly this way.
 
 ## Sync rules
 
@@ -45,7 +50,7 @@ no clock comparison between machines is needed. Assumes one editor at a time.
 | --- | --- |
 | Changed on pod only | Pulled |
 | Changed locally only | Pushed |
-| Changed on both | Nothing is overwritten. The pod version is saved as `note (pod conflict …).md` beside yours; edit your note to resolve |
+| Changed on both | Nothing is overwritten. The pod version is saved as `note (pod conflict …).md` beside yours — same for attachments, keeping their extension; edit your copy to resolve |
 | Deleted on pod | Local note moved to trash, recoverable |
 | Deleted locally | Pod copy kept, unless **Delete on pod** is enabled |
 | Many notes missing at once | All pod deletions refused — a renamed or unmounted folder cannot empty your pod |
