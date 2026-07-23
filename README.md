@@ -52,8 +52,8 @@ no clock comparison between machines is needed. Assumes one editor at a time.
 
 ## Sharing it
 
-A plugin is three files in `<vault>/.obsidian/plugins/solid-sync/`: `main.js`,
-`manifest.json`, and `styles.css`. Nothing else is needed at runtime.
+A plugin is two files in `<vault>/.obsidian/plugins/solid-sync/`: `main.js` and
+`manifest.json`. Nothing else is needed at runtime — this one adds no CSS.
 
 - **Send it to one person**: `npm run build`, then share those files. They drop the
   folder into their vault and enable it under **Settings → Community plugins**.
@@ -62,8 +62,8 @@ A plugin is three files in `<vault>/.obsidian/plugins/solid-sync/`: `main.js`,
   `manifest.json` as individual assets. Others install it with
   [BRAT](https://github.com/TfTHacker/obsidian42-brat) by entering the repo name — no
   review process, and BRAT keeps it updated.
-- **Inside a shared vault repo**: commit `main.js`, `manifest.json` and
-  `styles.css` — never `data.json`, which holds the token — and add the plugin
+- **Inside a shared vault repo**: commit the code files — never `data.json`,
+  which holds the token — and add the plugin
   id to `community-plugins.json` so it arrives enabled. Vaults usually gitignore
   `.obsidian/` wholesale; a bootstrap folder like `.obsidian_template` and a
   script that copies code files while leaving each person's `data.json` alone is
