@@ -62,9 +62,56 @@ A plugin is three files in `<vault>/.obsidian/plugins/solid-sync/`: `main.js`,
   `manifest.json` as individual assets. Others install it with
   [BRAT](https://github.com/TfTHacker/obsidian42-brat) by entering the repo name — no
   review process, and BRAT keeps it updated.
+- **Inside a shared vault repo**: commit `main.js`, `manifest.json` and
+  `styles.css` — never `data.json`, which holds the token — and add the plugin
+  id to `community-plugins.json` so it arrives enabled. Vaults usually gitignore
+  `.obsidian/` wholesale; a bootstrap folder like `.obsidian_template` and a
+  script that copies code files while leaving each person's `data.json` alone is
+  cleaner than punching exceptions into the ignore rules.
 - **Community plugin store**: submit a pull request to
   [obsidian-releases](https://github.com/obsidianmd/obsidian-releases). Reviewed by the
   Obsidian team; `npm run lint` covers most of what they check.
+
+## Credentials
+
+**Log in** exchanges your pod account password, once, for a client-credentials
+token. The password is never stored. The token is, in the plugin's `data.json`
+inside `.obsidian/` — in plain text.
+
+That is deliberate, and it is what every Obsidian plugin does: there is no
+secret storage API in Obsidian, on desktop or mobile. Obfuscating the token
+would only hide it from a casual reader, since the key doing the hiding would
+ship in `main.js` beside it.
+
+What actually reduces exposure, and is done instead:
+
+- **The token never enters a repo.** `.obsidian/` is conventionally gitignored,
+  and this plugin is distributed without a `data.json`, so nothing to leak.
+- **It is a token, not your password**, scoped to one pod account and revocable
+  from that account's page without changing anything else.
+- **Deleting on the pod is off by default**, so a leaked token that is not
+  noticed immediately still cannot destroy pod content through this plugin.
+
+### Why not the OS keychain
+
+Electron exposes `safeStorage`, which would encrypt the token against the
+system keyring, and some plugins reach for it through `require('electron')`.
+Not here, for three reasons:
+
+1. **It is not Obsidian API.** Reaching into Electron internals is unsupported,
+   breaks without warning on an Obsidian upgrade, and would fail review for the
+   community plugin store.
+2. **It is desktop-only.** There is no `safeStorage` on mobile, so the mobile
+   build would need the plaintext path anyway — two code paths, one of which is
+   still the plaintext one.
+3. **It defends a narrow case.** The keyring is unlocked by your own login
+   session, so anything running as you can still read the token. It helps only
+   against an offline copy of the vault — a stolen disk, or a backup. Treat
+   `data.json` the way you treat `~/.ssh/id_ed25519` and that case is covered by
+   full-disk encryption, which is a better fix than an app-level one.
+
+If the vault does end up somewhere it should not, revoke the token from the pod
+account page. That is a stronger guarantee than any local encryption.
 
 ## Tests
 
@@ -94,7 +141,5 @@ node test/trigger.mjs
 - Uses `fetch` rather than Obsidian's `requestUrl`, which the linter warns about.
   Pods send `Access-Control-Allow-Origin: app://obsidian.md`, so CORS is not an
   obstacle, and DPoP proofs need per-request control that `requestUrl` does not give.
-- Credentials live in the plugin's `data.json` in your vault, in plain text. Revoke a
-  token from your pod account page if the vault is ever shared.
 - Tested against Community Solid Server. The account API used for **Log in** is
   CSS-specific; other servers need their credentials pasted in by hand.
