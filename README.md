@@ -94,11 +94,23 @@ no clock comparison between machines is needed. Assumes one editor at a time.
 | --- | --- |
 | Changed on pod only | Pulled |
 | Changed locally only | Pushed |
-| Changed on both | Nothing is overwritten. The pod version is saved as `note (pod conflict …).md` beside yours — same for attachments, keeping their extension; edit your copy to resolve |
+| Changed on both, same bytes | Nothing. A re-save with no edit, or a pod re-serialising a resource, moves a timestamp without moving a byte — content is compared before anything is written |
+| Changed on both, different bytes | Nothing is overwritten. The pod version is saved as `note (pod conflict …).md` beside yours — same for attachments, keeping their extension; edit your copy to resolve |
 | Deleted on pod | Local note moved to trash, recoverable |
-| Deleted locally | Pod copy kept, unless **Delete on pod** is enabled |
+| Deleted locally | Pod copy kept, unless **Delete on pod** is enabled. It is not pulled again — see **Restore deleted notes** below |
 | Many notes missing at once | All pod deletions refused — a renamed or unmounted folder cannot empty your pod. Counted per pod, so adding pods never weakens the guard |
 | Pod refuses the write | Reported as skipped, that pod's copy left alone, the run carries on |
+
+### Restore deleted notes
+
+Deleting a note or attachment locally is remembered, so it is not pulled back on the
+next sync — otherwise a deletion could never stick with **Delete on pod** off. The
+cost is that it can never come back either, and every run keeps reporting it as
+skipped.
+
+**Settings → Solid Pod Sync → Restore deleted notes → Restore** forgets those
+deletions and syncs, pulling back everything the pods still have. It touches nothing
+that is already in the vault, and nothing on the pods.
 
 ## Sharing it
 
@@ -196,7 +208,16 @@ read-only pod and a writable one sync in the same run:
 POD_URL=… POD_ID=… POD_SECRET=… POD_URL_2=… node test/e2e.mjs
 ```
 
-Trigger rules, access parsing and settings migration, no network needed:
+Conflict and restore rules — writes `rc-*` resources, same scratch pod. Checks that
+matching bytes on both sides write no conflict copy, that differing bytes still do,
+and that a locally deleted file stays deleted until its state entry is dropped:
+
+```bash
+POD_URL=… POD_ID=… POD_SECRET=… node test/restore.mjs
+```
+
+Trigger rules, access parsing, settings migration, content comparison and the
+restore list, no network needed:
 
 ```bash
 node test/trigger.mjs

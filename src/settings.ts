@@ -1,7 +1,7 @@
 import { App, Modal, Notice, PluginSettingTab, Setting } from 'obsidian';
 import type SolidSyncPlugin from './main';
 import { createClientCredentials } from './solid';
-import { folderClash } from './sync';
+import { deletedLocally, folderClash } from './sync';
 
 /** One pod container mirrored into one vault folder. */
 export interface PodConfig {
@@ -332,6 +332,30 @@ export class SolidSyncSettingTab extends PluginSettingTab {
 				t
 					.setValue(this.plugin.settings.syncOnChange)
 					.onChange((v) => this.set('syncOnChange', v)),
+			);
+
+		new Setting(containerEl)
+			.setName('Restore deleted notes')
+			.setDesc(
+				'Pulls back notes and attachments a pod still has but the vault no longer does. Deleting one locally otherwise stops it being pulled again, so it stays reported as skipped.',
+			)
+			.addButton((btn) =>
+				btn.setButtonText('Restore').onClick(async () => {
+					const { vault } = this.plugin.app;
+					const gone = deletedLocally(
+						this.plugin.state,
+						(path) => vault.getAbstractFileByPath(path) !== null,
+					);
+					if (!gone.length) {
+						new Notice('Nothing to restore — every synced note is in the vault.');
+						return;
+					}
+					for (const path of gone) delete this.plugin.state[path];
+					// Saved before syncing: a run that fails partway must not leave the
+					// entries behind, or the next one reads them as deletions again.
+					await this.plugin.saveSettings();
+					await this.plugin.sync();
+				}),
 			);
 	}
 }

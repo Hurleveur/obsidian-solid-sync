@@ -185,6 +185,35 @@ async function writeFile(
 	return text ? vault.create(path, content) : vault.createBinary(path, content);
 }
 
+/**
+ * Both sides changed since the last sync — but only their timestamps are known to
+ * differ, and a re-save with no edit or a pod re-serialising a resource moves a
+ * timestamp without moving a byte. Comparing content is what stops those from
+ * breeding a conflict copy identical to the note it sits beside.
+ */
+export async function matchesLocal(
+	vault: Vault,
+	file: TFile,
+	podCopy: string | ArrayBuffer,
+): Promise<boolean> {
+	if (typeof podCopy === 'string') return podCopy === (await vault.read(file));
+	const local = new Uint8Array(await vault.readBinary(file));
+	const pod = new Uint8Array(podCopy);
+	return local.length === pod.length && local.every((b, i) => b === pod[i]);
+}
+
+/**
+ * Synced paths whose vault file is gone. Each is read as a local deletion on every
+ * run and, with pod deletions off, skipped forever — so the pod copy is never
+ * pulled again. Dropping the state entry is what makes the next sync fetch it back.
+ */
+export function deletedLocally(
+	state: SyncState,
+	exists: (path: string) => boolean,
+): string[] {
+	return Object.keys(state).filter((path) => !exists(path));
+}
+
 export async function runSync(plugin: SolidSyncPlugin): Promise<string> {
 	const { issuer, clientId, clientSecret, pods } = plugin.settings;
 	const configured = pods.filter((p) => p.url && p.folder);
@@ -329,19 +358,21 @@ async function syncPod(
 					report.skipped.push(`${path} (no read access)`);
 					continue;
 				}
-				// Named after the pod revision, so repeated syncs refresh one copy
-				// instead of breeding a new file every run.
-				await writeFile(vault, conflictPath(path, r.modified), podCopy);
-				// Both versions are now on disk, so stop re-reporting: mark each
-				// side as seen. The note keeps its local text, the pod keeps its
-				// own, and whichever the user edits next wins normally.
+				if (!(await matchesLocal(vault, f, podCopy))) {
+					// Named after the pod revision, so repeated syncs refresh one copy
+					// instead of breeding a new file every run.
+					await writeFile(vault, conflictPath(path, r.modified), podCopy);
+					report.conflicts.push(path);
+				}
+				// Mark each side as seen whether or not a copy was written. The note
+				// keeps its local text, the pod keeps its own, and whichever the user
+				// edits next wins normally.
 				state[path] = {
 					url: r.url,
 					pod: r.modified,
 					local: f.stat.mtime,
 					readOnly: entry.kind === 'wrapped',
 				};
-				report.conflicts.push(path);
 			} else if (podChanged) {
 				await pull(vault, fetcher, entry, path, state, report);
 			} else if (localChanged) {

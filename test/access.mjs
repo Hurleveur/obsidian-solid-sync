@@ -4,7 +4,13 @@
  *   node test/access.mjs
  */
 import assert from 'node:assert/strict';
-import { canWriteFrom, folderClash, migrateSettings } from './sync.bundle.mjs';
+import {
+	canWriteFrom,
+	deletedLocally,
+	folderClash,
+	matchesLocal,
+	migrateSettings,
+} from './sync.bundle.mjs';
 
 // --- WAC-Allow ------------------------------------------------------------
 const wac = (value) => canWriteFrom(new Headers(value ? { 'WAC-Allow': value } : {}));
@@ -84,5 +90,48 @@ assert.equal(already.pods.length, 1);
 assert.equal(already.pods[0].url, 'https://new.example/alex/');
 assert.equal(already.issuer, 'https://new.example');
 assert.ok(!('podUrl' in already), 'the legacy key does not linger in saved data');
+
+// --- restoring locally deleted notes --------------------------------------
+// Only the entries whose file is gone, and the state itself is left alone —
+// the caller decides what to drop.
+const state = {
+	'Pod/kept.md': { url: 'https://a.example/kept' },
+	'Pod/gone.md': { url: 'https://a.example/gone' },
+	'Pod/image.png': { url: 'https://a.example/image.png' },
+};
+const onDisk = new Set(['Pod/kept.md']);
+assert.deepEqual(
+	deletedLocally(state, (path) => onDisk.has(path)),
+	['Pod/gone.md', 'Pod/image.png'],
+	'attachments count too, not just notes',
+);
+assert.equal(Object.keys(state).length, 3, 'reads the state, never edits it');
+assert.deepEqual(deletedLocally({}, () => false), []);
+assert.deepEqual(
+	deletedLocally(state, () => true),
+	[],
+	'nothing to restore when every file is present',
+);
+
+// --- a conflict needs different bytes, not just a different timestamp ------
+const vaultOf = (text, bytes) => ({
+	read: async () => text,
+	readBinary: async () => bytes,
+});
+const bin = (...n) => new Uint8Array(n).buffer;
+
+assert.equal(await matchesLocal(vaultOf('same'), {}, 'same'), true);
+assert.equal(await matchesLocal(vaultOf('local'), {}, 'pod'), false);
+assert.equal(
+	await matchesLocal(vaultOf('trailing\n'), {}, 'trailing'),
+	false,
+	'whitespace is a real difference — never normalise it away',
+);
+
+// Attachments are compared byte for byte, and length alone is not enough.
+assert.equal(await matchesLocal(vaultOf('', bin(1, 2, 3)), {}, bin(1, 2, 3)), true);
+assert.equal(await matchesLocal(vaultOf('', bin(1, 2, 3)), {}, bin(1, 2, 4)), false);
+assert.equal(await matchesLocal(vaultOf('', bin(1, 2)), {}, bin(1, 2, 3)), false);
+assert.equal(await matchesLocal(vaultOf('', bin()), {}, bin()), true, 'both empty');
 
 console.log('access rules: all checks passed');
