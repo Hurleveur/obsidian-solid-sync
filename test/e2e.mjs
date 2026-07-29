@@ -2,6 +2,8 @@
  * End-to-end check against a real pod. Verifies pull, push, conflict handling and
  * both delete directions. Requires POD_URL; POD_ID/POD_SECRET enable the write half.
  *
+ * POD_URL_2 adds a second, read-only pod to the same run.
+ *
  *   node test/e2e.mjs
  */
 import assert from 'node:assert/strict';
@@ -15,6 +17,8 @@ import { createFetcher, anonymousFetch } from './sync.bundle.mjs';
 const POD = process.env.POD_URL;
 const ID = process.env.POD_ID;
 const SECRET = process.env.POD_SECRET;
+/** Any pod we cannot write to — a public one is ideal. Enables the last section. */
+const POD_2 = process.env.POD_URL_2;
 assert(POD, 'POD_URL required');
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'solid-vault-'));
@@ -22,8 +26,8 @@ const vault = new Vault(root);
 const plugin = {
 	app: { vault, fileManager: { trashFile: (f) => vault.trash(f) } },
 	settings: {
-		podUrl: POD,
-		folder: 'Pod',
+		issuer: new URL(POD).origin,
+		pods: [{ url: POD, folder: 'Pod' }],
 		clientId: ID ?? '',
 		clientSecret: SECRET ?? '',
 		pushDeletions: true,
@@ -244,6 +248,53 @@ const survivors = (await before(fetcher, POD)).resources.length;
 assert.ok(survivors >= 3, `pod kept its resources (${survivors})`);
 assert.equal((await fetcher(new URL('README', POD).href)).status, 200);
 ok('a wiped folder does not empty the pod');
+
+// 12. a read-only pod alongside a writable one -----------------------------
+// The regression test for a refused write aborting the run: the read-only pod is
+// listed first, so if its 403 threw, the writable pod would never be reached.
+if (POD_2) {
+	const root2 = fs.mkdtempSync(path.join(os.tmpdir(), 'solid-two-'));
+	const vault2 = new Vault(root2);
+	const two = {
+		app: { vault: vault2, fileManager: { trashFile: (f) => vault2.trash(f) } },
+		settings: {
+			...plugin.settings,
+			pushDeletions: true,
+			pods: [
+				{ url: POD_2, folder: 'Shared' },
+				{ url: POD, folder: 'Pod' },
+			],
+		},
+		state: {},
+		saveState: async () => {},
+		saveSettings: async () => {},
+	};
+
+	console.log('12. two pods:', await runSync(two));
+	const shared = vault2.getFiles().filter((f) => f.path.startsWith('Shared/'));
+	assert.ok(shared.length > 0, 'the read-only pod pulled into its own folder');
+	assert.equal(two.settings.pods[0].access, 'read');
+	assert.equal(two.settings.pods[1].access, 'write');
+	ok('each pod is mirrored into its own folder, with access discovered');
+
+	fs.appendFileSync(path.join(root2, shared[0].path), '\nnot mine to change\n');
+	fs.writeFileSync(path.join(root2, 'Pod/e2e-two.md'), '# written past a 403\n');
+	const mixed = await runSync(two);
+	console.log('   mixed:', mixed);
+	assert.match(mixed, /skipped/);
+	assert.match(mixed, /1 pushed/);
+	assert.equal(
+		await (await fetcher(new URL('e2e-two.md', POD).href)).text(),
+		'# written past a 403\n',
+		'the writable pod is still synced after the read-only one refuses a write',
+	);
+	ok('a refused write skips that file and does not abandon the run');
+
+	await del('e2e-two.md');
+	fs.rmSync(root2, { recursive: true, force: true });
+} else {
+	console.log('\n12. POD_URL_2 unset — read-only pod test skipped');
+}
 
 // cleanup ------------------------------------------------------------------
 await del('e2e-noext');

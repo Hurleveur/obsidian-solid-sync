@@ -18,8 +18,8 @@ const vault = new Vault(root);
 const plugin = {
 	app: { vault, fileManager: { trashFile: (f) => vault.trash(f) } },
 	settings: {
-		podUrl: POD,
-		folder: 'Pod',
+		issuer: '',
+		pods: [{ url: POD, folder: 'Pod' }],
 		clientId: '',
 		clientSecret: '',
 		pushDeletions: true, // must still be ignored without credentials
@@ -43,12 +43,26 @@ const second = await runSync(plugin);
 console.log('second:', second);
 assert.match(second, /^0 pulled, 0 pushed/, 'second run is a no-op');
 
+// Access is discovered, not configured: a pod we cannot write to says so.
+assert.equal(plugin.settings.pods[0].access, 'read');
+
 // A local edit must never attempt a write against a pod we cannot write to.
 fs.appendFileSync(path.join(root, notes[0]), '\nlocal scribble\n');
 const third = await runSync(plugin);
 assert.match(third, /skipped/);
 assert.match(third, /0 pushed/);
 console.log('third :', third);
+
+// The edit is kept, and reported once — not in the summary of every run after.
+// A pod usually has some permanently unreadable resource, so this counts skips
+// rather than looking for the word: the edit must add exactly one, then stop.
+const skips = (summary) => Number(/(\d+) skipped/.exec(summary)?.[1] ?? 0);
+assert.match(fs.readFileSync(path.join(root, notes[0]), 'utf8'), /local scribble/);
+assert.equal(skips(third), skips(second) + 1, 'the edit is reported once');
+const fourth = await runSync(plugin);
+assert.match(fourth, /^0 pulled, 0 pushed/);
+assert.equal(skips(fourth), skips(second), 'and not re-reported after that');
+console.log('fourth:', fourth);
 
 fs.rmSync(root, { recursive: true, force: true });
 console.log('\npublic pod checks passed');

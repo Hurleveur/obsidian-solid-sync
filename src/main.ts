@@ -1,6 +1,6 @@
 import { Notice, Plugin, TAbstractFile } from 'obsidian';
 import {
-	DEFAULT_SETTINGS,
+	migrateSettings,
 	SolidSyncSettingTab,
 	type SolidSyncSettings,
 } from './settings';
@@ -56,7 +56,7 @@ export default class SolidSyncPlugin extends Plugin {
 		);
 		this.register(() => window.clearTimeout(this.pending));
 
-		if (this.settings.syncOnStartup && this.settings.podUrl) {
+		if (this.settings.syncOnStartup && this.settings.pods.length) {
 			this.app.workspace.onLayoutReady(() => this.sync());
 		}
 	}
@@ -65,7 +65,10 @@ export default class SolidSyncPlugin extends Plugin {
 	private scheduleSync(path: string) {
 		if (!this.settings.syncOnChange) return;
 		const busy = this.syncing || Date.now() < this.quietUntil;
-		if (!isSyncTrigger(path, this.settings.folder, busy)) return;
+		const triggers = this.settings.pods.some((pod) =>
+			isSyncTrigger(path, pod.folder, busy),
+		);
+		if (!triggers) return;
 		window.clearTimeout(this.pending);
 		this.pending = window.setTimeout(
 			() => void this.sync(),
@@ -101,8 +104,8 @@ export default class SolidSyncPlugin extends Plugin {
 
 	async loadSettings() {
 		const data = ((await this.loadData()) ?? {}) as Partial<PluginData>;
-		const { state, lastRun, ...settings } = data;
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, settings);
+		const { state, lastRun, ...saved } = data;
+		this.settings = migrateSettings(saved);
 		this.state = state ?? {};
 		this.lastRun = lastRun;
 	}

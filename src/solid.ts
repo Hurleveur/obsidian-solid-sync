@@ -93,6 +93,7 @@ export async function createFetcher(
 	};
 
 	let token = await getToken();
+	let mintedAt = Date.now();
 
 	const send = (url: string, init: RequestInit, method: string) =>
 		proof(url, method).then((dpop) =>
@@ -110,11 +111,17 @@ export async function createFetcher(
 	return async (url, init = {}) => {
 		const method = init.method ?? 'GET';
 		const res = await send(url, init, method);
-		if (res.status !== 401) return res;
+		// A pod that does not honour our issuer answers 401 to everything, so
+		// without this a foreign container would mint a token per resource.
+		if (res.status !== 401 || Date.now() - mintedAt < FRESH_TOKEN_MS) return res;
 		token = await getToken();
+		mintedAt = Date.now();
 		return send(url, init, method);
 	};
 }
+
+/** A 401 sooner than this after minting is a refusal, not an expiry. */
+const FRESH_TOKEN_MS = 10_000;
 
 /**
  * Mints client credentials through the pod's account API, so the user never has to
@@ -226,36 +233,64 @@ function describe(graph: JsonLdNode[], url: string): PodResource {
 	};
 }
 
-/** Lists one container's direct children. */
+/**
+ * Whether we may write here, read off `WAC-Allow: user="read write", public="read"`.
+ *
+ * `undefined` means the server did not say — the header is part of WAC, and a pod
+ * running ACP omits it. Unknown must not read as "no": the caller tries the write
+ * and learns from the 403 instead.
+ */
+export function canWriteFrom(headers: Headers): boolean | undefined {
+	const header = headers.get('wac-allow');
+	if (!header) return undefined;
+	const modes = /user\s*=\s*"([^"]*)"/i.exec(header)?.[1] ?? '';
+	return modes.split(/\s+/).includes('write');
+}
+
+/** Lists one container's direct children, and what we may do with it. */
 export async function listContainer(
 	fetcher: Fetcher,
 	url: string,
-): Promise<PodResource[]> {
+): Promise<{ children: PodResource[]; canWrite: boolean | undefined }> {
 	const res = await fetcher(url, {
 		headers: { Accept: 'application/ld+json' },
 	});
 	if (!res.ok) throw new Error(`${res.status} listing ${url}`);
 	const graph = (await res.json()) as JsonLdNode[];
-	return collect(graph, url, LDP_CONTAINS)
-		.map((c) => (c as { '@id': string })['@id'])
-		.map((child) => describe(graph, child));
+	return {
+		children: collect(graph, url, LDP_CONTAINS)
+			.map((c) => (c as { '@id': string })['@id'])
+			.map((child) => describe(graph, child)),
+		canWrite: canWriteFrom(res.headers),
+	};
 }
 
-/** Walks a container recursively. Unreadable sub-containers are reported, not fatal. */
+/**
+ * Walks a container recursively. Unreadable sub-containers are reported, not fatal.
+ * `canWrite` describes the root — permissions can differ per sub-container, but the
+ * root is what a push to a new note has to go through.
+ */
 export async function walk(
 	fetcher: Fetcher,
 	root: string,
-): Promise<{ resources: PodResource[]; unreadable: string[] }> {
+): Promise<{
+	resources: PodResource[];
+	unreadable: string[];
+	canWrite: boolean | undefined;
+}> {
 	const resources: PodResource[] = [];
 	const unreadable: string[] = [];
 	const queue = [root];
 	const seen = new Set(queue);
+	let canWrite: boolean | undefined;
 
 	while (queue.length) {
 		const url = queue.shift() as string;
 		let children: PodResource[];
 		try {
-			children = await listContainer(fetcher, url);
+			const listing = await listContainer(fetcher, url);
+			children = listing.children;
+			if (url === root) canWrite = listing.canWrite;
 		} catch {
 			unreadable.push(url);
 			continue;
@@ -267,5 +302,5 @@ export async function walk(
 			else resources.push(child);
 		}
 	}
-	return { resources, unreadable };
+	return { resources, unreadable, canWrite };
 }

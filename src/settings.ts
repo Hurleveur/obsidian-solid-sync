@@ -1,12 +1,22 @@
 import { App, Modal, Notice, PluginSettingTab, Setting } from 'obsidian';
 import type SolidSyncPlugin from './main';
 import { createClientCredentials } from './solid';
+import { folderClash } from './sync';
+
+/** One pod container mirrored into one vault folder. */
+export interface PodConfig {
+	url: string;
+	folder: string;
+	/** What the last sync found we could do here. Discovered, never set by hand. */
+	access?: 'read' | 'write';
+}
 
 export interface SolidSyncSettings {
-	podUrl: string;
-	folder: string;
+	/** Origin of the pod you logged in to — the only place tokens are minted. */
+	issuer: string;
 	clientId: string;
 	clientSecret: string;
+	pods: PodConfig[];
 	pushDeletions: boolean;
 	syncOnStartup: boolean;
 	syncOnChange: boolean;
@@ -15,15 +25,44 @@ export interface SolidSyncSettings {
 }
 
 export const DEFAULT_SETTINGS: SolidSyncSettings = {
-	podUrl: '',
-	folder: 'Pod',
+	issuer: '',
 	clientId: '',
 	clientSecret: '',
+	pods: [],
 	pushDeletions: false,
 	syncOnStartup: false,
 	syncOnChange: false,
 	maxFileMB: 10,
 };
+
+/** Settings written before pods were a list. Read once, then dropped. */
+interface Legacy {
+	podUrl?: string;
+	folder?: string;
+}
+
+/**
+ * Folds saved data into a complete settings object, moving a pre-list `podUrl` into
+ * `pods[0]`. Sync state is keyed by vault path, so it survives the move untouched
+ * and an upgrading user's next sync is a no-op rather than a re-download.
+ */
+export function migrateSettings(
+	saved: Partial<SolidSyncSettings> & Legacy,
+): SolidSyncSettings {
+	const { podUrl, folder, ...rest } = saved;
+	const settings: SolidSyncSettings = Object.assign(
+		{},
+		DEFAULT_SETTINGS,
+		rest,
+		// A saved `null` from an old build must not defeat the default.
+		rest.pods ? {} : { pods: [] },
+	);
+	if (podUrl && !settings.pods.length) {
+		settings.pods = [{ url: podUrl, folder: folder ?? 'Pod' }];
+		settings.issuer ||= new URL(podUrl).origin;
+	}
+	return settings;
+}
 
 /** Asks for pod account login once, to mint client credentials. Password is not stored. */
 class LoginModal extends Modal {
@@ -87,6 +126,13 @@ class LoginModal extends Modal {
 	}
 }
 
+const accessText = (access: PodConfig['access']) =>
+	access === 'write'
+		? 'Read and write.'
+		: access === 'read'
+			? 'Read-only — new notes stay in the vault. An edit is still offered, in case that one note is shared with you.'
+			: 'Access is checked on the first sync.';
+
 export class SolidSyncSettingTab extends PluginSettingTab {
 	constructor(
 		app: App,
@@ -101,6 +147,87 @@ export class SolidSyncSettingTab extends PluginSettingTab {
 	) {
 		this.plugin.settings[key] = value;
 		await this.plugin.saveSettings();
+	}
+
+	/**
+	 * One row per pod, plus a button that adds another. `display()` re-runs from
+	 * scratch every time, so a growing list needs nothing beyond re-displaying.
+	 */
+	private displayPods(containerEl: HTMLElement): void {
+		const { pods } = this.plugin.settings;
+
+		new Setting(containerEl)
+			.setName('Pods')
+			.setDesc(
+				'Each container is mirrored into its own vault folder. Add any pod you can read — your own, a shared one, or a public one.',
+			)
+			.setHeading()
+			.addButton((btn) =>
+				btn
+					.setButtonText('Add pod')
+					.setCta()
+					.onClick(async () => {
+						pods.push({ url: '', folder: '' });
+						await this.plugin.saveSettings();
+						this.display();
+					}),
+			);
+
+		if (!pods.length) {
+			containerEl.createEl('p', {
+				text: 'No pods yet. Add one to get started.',
+			});
+			return;
+		}
+
+		pods.forEach((pod, i) => {
+			new Setting(containerEl)
+				.setName(`Pod ${i + 1}`)
+				.setDesc(accessText(pod.access))
+				.addText((t) =>
+					t
+						.setPlaceholder('https://pod.example.eu/alex/')
+						.setValue(pod.url)
+						.onChange(async (v) => {
+							const url = v.trim();
+							// Every pod path is built by appending to this, so the
+							// trailing slash cannot be optional.
+							pod.url = url && !url.endsWith('/') ? `${url}/` : url;
+							// Permissions belong to the old URL, not this one.
+							delete pod.access;
+							await this.plugin.saveSettings();
+						}),
+				)
+				.addText((t) =>
+					t
+						.setPlaceholder('Vault folder')
+						.setValue(pod.folder)
+						.onChange(async (v) => {
+							const folder = v.trim();
+							const clash = folderClash(pods, i, folder);
+							if (clash) {
+								// Two pods sharing a folder would each try to push
+								// the other's notes, so refuse rather than save.
+								new Notice(
+									`"${folder}" overlaps the folder "${clash}" of another pod. Give each pod its own folder.`,
+								);
+								return;
+							}
+							pod.folder = folder;
+							await this.plugin.saveSettings();
+						}),
+				)
+				.addExtraButton((btn) =>
+					btn
+						.setIcon('trash-2')
+						.setTooltip('Remove this pod (vault notes are kept)')
+						.onClick(async () => {
+							pods.splice(i, 1);
+							await this.plugin.saveSettings();
+							this.display();
+						}),
+				);
+		});
 	}
 
 	display(): void {
@@ -125,58 +252,38 @@ export class SolidSyncSettingTab extends PluginSettingTab {
 					}),
 			);
 
-		new Setting(containerEl)
-			.setName('Pod container URL')
-			.setDesc(
-				'The container to sync, for example https://pod.example.eu/alex/',
-			)
-			.addText((t) =>
-				t
-					.setPlaceholder('https://pod.example.eu/alex/')
-					.setValue(this.plugin.settings.podUrl)
-					.onChange((v) => this.set('podUrl', v.trim())),
-			);
-
-		new Setting(containerEl)
-			.setName('Vault folder')
-			.setDesc(
-				'Notes are created here. Existing notes in it are synced to the pod.',
-			)
-			.addText((t) =>
-				t
-					.setValue(this.plugin.settings.folder)
-					.onChange((v) => this.set('folder', v.trim())),
-			);
+		this.displayPods(containerEl);
 
 		new Setting(containerEl)
 			.setName('Credentials')
 			.setDesc(
 				this.plugin.settings.clientId
-					? `Token ${this.plugin.settings.clientId.slice(0, 16)}… — writing enabled.`
-					: 'Without credentials the pod is read-only, which is enough for public pods.',
+					? `Token ${this.plugin.settings.clientId.slice(0, 16)}… from ${this.plugin.settings.issuer}. It identifies you to every pod above; each one decides what you may do.`
+					: 'Without credentials every pod is read-only, which is enough for public ones.',
 			)
 			.addButton((btn) =>
 				btn.setButtonText('Log in').onClick(() => {
-					const url = this.plugin.settings.podUrl;
+					// Your account lives on one server; that one mints the token
+					// every pod in the list is then addressed with.
+					const url = this.plugin.settings.pods[0]?.url;
 					if (!url) {
-						new Notice('Set the pod URL first.');
+						new Notice('Add your own pod first.');
 						return;
 					}
-					new LoginModal(
-						this.app,
-						new URL(url).origin,
-						async (creds) => {
-							await this.set('clientId', creds.clientId);
-							await this.set('clientSecret', creds.clientSecret);
-							this.display();
-							// Logging in is when notes are expected to appear.
-							await this.plugin.sync();
-						},
-					).open();
+					const issuer = new URL(url).origin;
+					new LoginModal(this.app, issuer, async (creds) => {
+						await this.set('issuer', issuer);
+						await this.set('clientId', creds.clientId);
+						await this.set('clientSecret', creds.clientSecret);
+						this.display();
+						// Logging in is when notes are expected to appear.
+						await this.plugin.sync();
+					}).open();
 				}),
 			)
 			.addButton((btn) =>
 				btn.setButtonText('Clear').onClick(async () => {
+					await this.set('issuer', '');
 					await this.set('clientId', '');
 					await this.set('clientSecret', '');
 					this.display();

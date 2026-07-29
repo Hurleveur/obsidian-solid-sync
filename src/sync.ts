@@ -1,14 +1,19 @@
 /**
- * Two-way sync between a pod container and a vault folder.
+ * Two-way sync between pod containers and vault folders, one folder per pod.
  *
  * Assumes a single editor at a time: change detection compares each side against
  * the state recorded at the last sync, so no clock comparison between machines is
  * needed. When both sides moved, nothing is overwritten — the pod copy is written
  * beside the local one for the user to merge.
+ *
+ * Every pod is addressed with the same identity, and each one decides what that
+ * identity may do. Write access is discovered, never configured: what a pod refuses
+ * is reported and recorded, never retried into an error that stops the run.
  */
 
 import { Notice, TFile, Vault, normalizePath } from 'obsidian';
 import type SolidSyncPlugin from './main';
+import type { PodConfig } from './settings';
 import {
 	anonymousFetch,
 	createFetcher,
@@ -105,6 +110,29 @@ export function isSyncTrigger(
 	return !CONFLICT_COPY.test(path);
 }
 
+/**
+ * The folder another pod already claims, if `folder` would overlap it — `null` when
+ * it is free. Sync scans a folder with `startsWith`, so two pods sharing one, or one
+ * nested in another, would each treat the other's notes as its own and push them to
+ * the wrong pod. Sibling names that merely share a prefix are fine.
+ */
+export function folderClash(
+	pods: PodConfig[],
+	index: number,
+	folder: string,
+): string | null {
+	const f = normalizePath(folder);
+	if (!f || f === '/') return null;
+	for (const [i, pod] of pods.entries()) {
+		if (i === index || !pod.folder) continue;
+		const other = normalizePath(pod.folder);
+		if (f === other || f.startsWith(`${other}/`) || other.startsWith(`${f}/`)) {
+			return other;
+		}
+	}
+	return null;
+}
+
 /** Conflict copies live in the synced folder but are local scratch — never pushed. */
 const CONFLICT_COPY = / \(pod conflict [^)]*\)(\.[^./]+)?$/;
 
@@ -158,19 +186,24 @@ async function writeFile(
 }
 
 export async function runSync(plugin: SolidSyncPlugin): Promise<string> {
-	const { podUrl, folder, clientId, clientSecret, pushDeletions, maxFileMB } =
-		plugin.settings;
-	if (!podUrl || !folder) throw new Error('Set the pod URL and vault folder first.');
+	const { issuer, clientId, clientSecret, pods } = plugin.settings;
+	const configured = pods.filter((p) => p.url && p.folder);
+	const first = configured[0];
+	if (!first) {
+		throw new Error('Add a pod container URL and a vault folder first.');
+	}
 
-	const root = podUrl.endsWith('/') ? podUrl : `${podUrl}/`;
-	const base = normalizePath(folder);
 	const authenticated = Boolean(clientId && clientSecret);
+	// One identity for every pod: Solid-OIDC has each pod resolve our WebID back to
+	// this issuer, so the token minted here is what we present everywhere.
 	const fetcher: Fetcher = authenticated
-		? await createFetcher(root, clientId, clientSecret)
+		? await createFetcher(
+				issuer || new URL(first.url).origin,
+				clientId,
+				clientSecret,
+			)
 		: anonymousFetch;
 
-	const vault = plugin.app.vault;
-	const state: SyncState = plugin.state;
 	const report: Report = {
 		pulled: 0,
 		pushed: 0,
@@ -179,6 +212,40 @@ export async function runSync(plugin: SolidSyncPlugin): Promise<string> {
 		conflicts: [],
 		skipped: [],
 	};
+
+	// A half-filled row is easy to leave behind after selecting Add pod, and
+	// silently syncing nothing looks identical to the pod being empty.
+	for (const pod of pods) {
+		if (!pod.url) report.skipped.push(`${pod.folder || 'a pod'} (no URL set)`);
+		else if (!pod.folder) report.skipped.push(`${pod.url} (no vault folder set)`);
+	}
+
+	for (const pod of configured) {
+		try {
+			await syncPod(plugin, pod, fetcher, report, authenticated);
+		} catch (e) {
+			// One unreachable pod must not stop the others.
+			report.skipped.push(`${pod.folder} (${(e as Error).message})`);
+		}
+	}
+
+	await plugin.saveState();
+	return summarize(report, authenticated);
+}
+
+async function syncPod(
+	plugin: SolidSyncPlugin,
+	pod: PodConfig,
+	fetcher: Fetcher,
+	report: Report,
+	authenticated: boolean,
+): Promise<void> {
+	const { pushDeletions, maxFileMB } = plugin.settings;
+	const root = pod.url.endsWith('/') ? pod.url : `${pod.url}/`;
+	const base = normalizePath(pod.folder);
+
+	const vault = plugin.app.vault;
+	const state: SyncState = plugin.state;
 
 	// --- gather both sides, keyed by vault path -------------------------------
 	// Too big to move, on either side. Such a path is left out of the whole
@@ -198,7 +265,13 @@ export async function runSync(plugin: SolidSyncPlugin): Promise<string> {
 		return true;
 	};
 
-	const { resources, unreadable } = await walk(fetcher, root);
+	const { resources, unreadable, canWrite } = await walk(fetcher, root);
+	// An ACP server sends no WAC-Allow, so `undefined` means "the pod did not say".
+	// Assume we may write and let the first 403 settle it, rather than refusing to
+	// push against a pod that would have accepted it.
+	const writable = authenticated && canWrite !== false;
+	pod.access = writable ? 'write' : 'read';
+
 	const remote = new Map<string, { r: PodResource; kind: Kind }>();
 	for (const r of resources) {
 		const rel = decodeURIComponent(r.url.slice(root.length));
@@ -229,20 +302,18 @@ export async function runSync(plugin: SolidSyncPlugin): Promise<string> {
 
 	// A renamed or unmounted folder makes every note look deleted at once. Refuse to
 	// mirror that onto the pod — one wrong sync should not be able to empty it.
-	const missingLocally = Object.keys(state).filter(
+	// Counted within this pod's folder only: measured against every pod's state, a
+	// wiped folder would stop tripping the guard as soon as other pods were added.
+	const known = Object.keys(state).filter((p) => p.startsWith(`${base}/`));
+	const missingLocally = known.filter(
 		(p) => remote.has(p) && !local.has(p) && !oversize.has(p),
 	);
 	const massDeletion =
-		missingLocally.length > 3 &&
-		missingLocally.length > Object.keys(state).length / 2;
+		missingLocally.length > 3 && missingLocally.length > known.length / 2;
 
 	// --- decide per path ------------------------------------------------------
 	const pushedPaths: string[] = [];
-	for (const path of new Set([
-		...remote.keys(),
-		...local.keys(),
-		...Object.keys(state),
-	])) {
+	for (const path of new Set([...remote.keys(), ...local.keys(), ...known])) {
 		if (oversize.has(path)) continue;
 		const entry = remote.get(path);
 		const r = entry?.r;
@@ -274,27 +345,46 @@ export async function runSync(plugin: SolidSyncPlugin): Promise<string> {
 			} else if (podChanged) {
 				await pull(vault, fetcher, entry, path, state, report);
 			} else if (localChanged) {
+				const wrapped = entry.kind === 'wrapped';
+				// Deliberately gated on `authenticated`, not `writable`: writing an
+				// existing resource needs permission on that resource, which a pod
+				// can grant without granting the container — sharing one note out of
+				// a container you may not otherwise write is an ordinary Solid setup.
+				// The cost of being wrong is one refused PUT, once per edit.
 				if (prev?.readOnly || !authenticated) {
+					markUnpushable(state, path, r.url, f.stat.mtime, r.modified, wrapped);
 					report.skipped.push(`${path} (local edit, read-only)`);
-				} else {
-					await push(fetcher, vault, f, prev.url, state);
+				} else if (await push(fetcher, vault, f, prev.url, state)) {
 					pushedPaths.push(path);
 					report.pushed++;
+				} else {
+					markUnpushable(
+						state,
+						path,
+						prev.url,
+						f.stat.mtime,
+						r.modified,
+						wrapped,
+					);
+					report.skipped.push(`${path} (local edit, no write access)`);
 				}
 			}
 		} else if (entry && r && !f) {
 			if (prev) {
 				// Deleted locally since the last sync.
-				if (!pushDeletions || !authenticated || massDeletion) {
+				if (!pushDeletions || !writable || massDeletion) {
 					report.skipped.push(
 						massDeletion
 							? `${path} (many notes missing at once, pod left untouched)`
 							: `${path} (deleted locally, kept on pod)`,
 					);
-				} else {
-					await fetcher(r.url, { method: 'DELETE' });
+				} else if ((await fetcher(r.url, { method: 'DELETE' })).ok) {
 					delete state[path];
 					report.deletedRemote++;
+				} else {
+					// Keep the state entry: dropping it would make the next run read
+					// the surviving pod copy as new and pull the note back silently.
+					report.skipped.push(`${path} (deleted locally, pod refused)`);
 				}
 			} else {
 				await pull(vault, fetcher, entry, path, state, report);
@@ -305,13 +395,18 @@ export async function runSync(plugin: SolidSyncPlugin): Promise<string> {
 				await plugin.app.fileManager.trashFile(f);
 				delete state[path];
 				report.deletedLocal++;
-			} else if (!authenticated) {
-				report.skipped.push(`${path} (new note, no credentials)`);
+			} else if (!writable) {
+				report.skipped.push(
+					`${path} (new note, ${authenticated ? 'no write access' : 'no credentials'})`,
+				);
 			} else {
 				const url = root + encodeURI(path.slice(base.length + 1));
-				await push(fetcher, vault, f, url, state);
-				pushedPaths.push(path);
-				report.pushed++;
+				if (await push(fetcher, vault, f, url, state)) {
+					pushedPaths.push(path);
+					report.pushed++;
+				} else {
+					report.skipped.push(`${path} (new note, no write access)`);
+				}
 			}
 		} else {
 			delete state[path];
@@ -334,11 +429,29 @@ export async function runSync(plugin: SolidSyncPlugin): Promise<string> {
 		}
 	}
 
-	await plugin.saveState();
 	for (const url of unreadable) {
 		report.skipped.push(`${url} (no access)`);
 	}
-	return summarize(report, authenticated);
+}
+
+/**
+ * Records a local edit we were not allowed to send, marking both sides seen so the
+ * note keeps the user's text and the skip is reported once rather than in every
+ * summary from here on.
+ *
+ * `readOnly` stays a fact about the resource — a wrapped RDF note is never pushable
+ * — and not about this refusal. A pod that later grants write access would otherwise
+ * find every note stuck, since the flag alone decides whether a push is attempted.
+ */
+function markUnpushable(
+	state: SyncState,
+	path: string,
+	url: string,
+	local: number,
+	pod: string,
+	readOnly: boolean,
+) {
+	state[path] = { url, pod, local, readOnly };
 }
 
 /**
@@ -380,13 +493,18 @@ async function pull(
 	report.pulled++;
 }
 
+/**
+ * Writes one file to the pod. Returns false when the pod refused it, rather than
+ * throwing: a read-only pod refuses every write, and one refusal must not abandon
+ * the rest of the run — the remaining files, and every pod after this one.
+ */
 async function push(
 	fetcher: Fetcher,
 	vault: Vault,
 	file: TFile,
 	url: string,
 	state: SyncState,
-) {
+): Promise<boolean> {
 	const type = mimeOf(file.path);
 	const res = await fetcher(url, {
 		method: 'PUT',
@@ -396,13 +514,14 @@ async function push(
 				? await vault.read(file)
 				: await vault.readBinary(file),
 	});
-	if (!res.ok) throw new Error(`${res.status} writing ${url}`);
+	if (!res.ok) return false;
 	state[file.path] = {
 		url,
 		pod: '',
 		local: file.stat.mtime,
 		readOnly: false,
 	};
+	return true;
 }
 
 function summarize(report: Report, authenticated: boolean): string {

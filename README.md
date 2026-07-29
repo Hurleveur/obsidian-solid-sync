@@ -1,7 +1,11 @@
 # Solid Pod Sync
 
-Syncs a [Solid](https://solidproject.org/) pod container with a vault folder, as
+Syncs [Solid](https://solidproject.org/) pod containers with vault folders, as
 ordinary markdown notes — so search, backlinks, graph and Bases all work on them.
+
+Add as many pods as you like: your own, a shared team container, a friend's public
+notes. Each gets its own vault folder, and each decides for itself what you may do
+there — see [Many pods, one identity](#many-pods-one-identity).
 
 Built on the official `obsidian-sample-plugin` scaffold. No runtime dependencies:
 DPoP authentication uses WebCrypto, and RDF is read as JSON-LD through the pod's own
@@ -9,12 +13,52 @@ content negotiation, so no `@inrupt/*` client and no RDF parser are bundled.
 
 ## Setup
 
-1. **Settings → Solid Pod Sync**, set the container URL (`https://pod.example.eu/you/`)
-   and the vault folder.
+1. **Settings → Solid Pod Sync → Add pod**, then set the container URL
+   (`https://pod.example.eu/you/`) and the vault folder it mirrors into.
 2. Public pods work immediately, read-only. For your own pod, select **Log in** and
    enter your pod account email and password. This mints a client-credentials token
    through the pod's account API; the password is used once and never stored.
 3. Run **Sync now** from the command palette, or select the ribbon icon.
+4. Add more pods the same way. Give each its own folder — overlapping folders are
+   refused, because a note in two pods' folders would be pushed to the wrong one.
+
+## Many pods, one identity
+
+You log in **once**, to your own pod. Solid-OIDC is built for this: every other pod
+resolves your WebID back to that issuer, so the same token identifies you everywhere.
+There is no per-pod password to manage.
+
+What each pod then grants you is **discovered, never configured**. The first sync
+reads the `WAC-Allow` header off the container listing it already fetches, and the
+settings row shows what came back:
+
+| Row says | Meaning |
+| --- | --- |
+| **Read and write** | Notes sync both ways, as below |
+| **Read-only** | Notes are pulled. New notes stay in the vault |
+| **Access is checked on the first sync** | Not synced yet |
+
+Servers running ACP rather than WAC send no such header. Nothing breaks: the plugin
+assumes it may write, tries, and records what the pod answers.
+
+The badge describes the **container**, which is what creating and deleting needs.
+Editing an existing note needs permission on that note, and the two can differ —
+sharing one note out of a container you cannot otherwise write is an ordinary Solid
+setup. So an edit is always attempted on a pod you are logged in to, even a
+read-only one. Being wrong costs one refused request, once per edit.
+
+### When you cannot write
+
+A local edit that a pod refuses is **kept, never discarded**. It is reported as
+skipped once, then marked as seen so it stops appearing in every later summary. The
+note simply stays yours and diverges from the pod. If someone grants you access
+later, your next edit to it pushes normally — nothing is permanently marked.
+
+If the pod copy later changes too, the ordinary conflict rule applies — the pod
+version is saved beside your note, and neither is overwritten.
+
+A pod that refuses a write, or one that is unreachable, is reported and stepped over.
+It never stops the other pods in the list from syncing.
 
 ## When it syncs
 
@@ -23,7 +67,7 @@ content negotiation, so no `@inrupt/*` client and no RDF parser are bundled.
 | **Sync now** — ribbon icon, command palette, or the settings button | Always available |
 | Right after a successful login | Always |
 | **Sync on startup** — on plugin load, not periodic | Off |
-| **Sync after changes** — about 10 seconds after you add, edit, rename or delete a file in the folder, once a burst of edits settles | Off |
+| **Sync after changes** — about 10 seconds after you add, edit, rename or delete a file in any synced folder, once a burst of edits settles | Off |
 
 There is no polling. Pod-side changes arrive on the next sync, so leave **Sync after changes** on if you edit from more than one place.
 
@@ -53,7 +97,8 @@ no clock comparison between machines is needed. Assumes one editor at a time.
 | Changed on both | Nothing is overwritten. The pod version is saved as `note (pod conflict …).md` beside yours — same for attachments, keeping their extension; edit your copy to resolve |
 | Deleted on pod | Local note moved to trash, recoverable |
 | Deleted locally | Pod copy kept, unless **Delete on pod** is enabled |
-| Many notes missing at once | All pod deletions refused — a renamed or unmounted folder cannot empty your pod |
+| Many notes missing at once | All pod deletions refused — a renamed or unmounted folder cannot empty your pod. Counted per pod, so adding pods never weakens the guard |
+| Pod refuses the write | Reported as skipped, that pod's copy left alone, the run carries on |
 
 ## Sharing it
 
@@ -105,7 +150,9 @@ What actually reduces exposure, and is done instead:
 - **The token never enters a repo.** `.obsidian/` is conventionally gitignored,
   and this plugin is distributed without a `data.json`, so nothing to leak.
 - **It is a token, not your password**, scoped to one pod account and revocable
-  from that account's page without changing anything else.
+  from that account's page without changing anything else. It identifies you to
+  every pod in the list, but grants nothing beyond what each of those pods had
+  already granted your WebID.
 - **Deleting on the pod is off by default**, so a leaked token that is not
   noticed immediately still cannot destroy pod content through this plugin.
 
@@ -141,17 +188,24 @@ npx esbuild test/entry.ts --bundle --format=esm --platform=node \
 POD_URL=https://pod.example.eu/someone/ node test/public.mjs
 ```
 
-Full read/write suite — creates and deletes `e2e-*` resources, so use a scratch pod:
+Full read/write suite — creates and deletes `e2e-*` resources, so use a scratch pod.
+Set `POD_URL_2` to any pod you cannot write to, and the suite also checks that a
+read-only pod and a writable one sync in the same run:
 
 ```bash
-POD_URL=… POD_ID=… POD_SECRET=… node test/e2e.mjs
+POD_URL=… POD_ID=… POD_SECRET=… POD_URL_2=… node test/e2e.mjs
 ```
 
-Trigger rules, no network needed:
+Trigger rules, access parsing and settings migration, no network needed:
 
 ```bash
 node test/trigger.mjs
+node test/access.mjs
 ```
+
+Both pods can be local. [Community Solid Server](https://github.com/CommunitySolidServer/CommunitySolidServer)
+serves two accounts from one instance, and a second account's pod is read-only to
+you by default — which is exactly the case worth testing.
 
 ## Notes
 
