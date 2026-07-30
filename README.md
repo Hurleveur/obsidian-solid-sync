@@ -230,8 +230,5 @@ you by default — which is exactly the case worth testing.
 
 ## Notes
 
-- Uses `fetch` rather than Obsidian's `requestUrl`, which the linter warns about.
-  Pods send `Access-Control-Allow-Origin: app://obsidian.md`, so CORS is not an
-  obstacle, and DPoP proofs need per-request control that `requestUrl` does not give.
 - Tested against Community Solid Server. The account API used for **Log in** is
   CSS-specific; other servers need their credentials pasted in by hand.

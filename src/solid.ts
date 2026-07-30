@@ -5,7 +5,19 @@
  * JSON-LD via content negotiation, so no RDF parser is needed either.
  */
 
-export type Fetcher = (url: string, init?: RequestInit) => Promise<Response>;
+import { requestUrl } from 'obsidian';
+
+/** The subset of fetch's Response this module actually uses. */
+export interface FetchResponse {
+	ok: boolean;
+	status: number;
+	headers: Headers;
+	json(): Promise<unknown>;
+	text(): Promise<string>;
+	arrayBuffer(): Promise<ArrayBuffer>;
+}
+
+export type Fetcher = (url: string, init?: RequestInit) => Promise<FetchResponse>;
 
 export interface PodResource {
 	url: string;
@@ -38,8 +50,38 @@ async function signJwt(
 	return `${data}.${b64url(new Uint8Array(sig))}`;
 }
 
+/**
+ * Adapts Obsidian's `requestUrl` to fetch's shape. Pod hosts are arbitrary and
+ * cross-origin, and plain `fetch` is blocked by CORS and unreliable on mobile —
+ * `requestUrl` is the API Obsidian ships specifically for this.
+ */
+async function requestUrlFetch(
+	url: string,
+	init: RequestInit = {},
+): Promise<FetchResponse> {
+	const headers: Record<string, string> = {};
+	if (init.headers) {
+		new Headers(init.headers).forEach((v, k) => (headers[k] = v));
+	}
+	const res = await requestUrl({
+		url,
+		method: init.method ?? 'GET',
+		headers,
+		body: init.body as string | ArrayBuffer | undefined,
+		throw: false,
+	});
+	return {
+		ok: res.status >= 200 && res.status < 300,
+		status: res.status,
+		headers: new Headers(res.headers),
+		json: async () => res.json as unknown,
+		text: async () => res.text,
+		arrayBuffer: async () => res.arrayBuffer,
+	};
+}
+
 /** Anonymous fetcher — enough to read any public pod. */
-export const anonymousFetch: Fetcher = (url, init) => fetch(url, init);
+export const anonymousFetch: Fetcher = requestUrlFetch;
 
 /**
  * Logs in with client credentials (created in the pod's account page) and returns
@@ -73,7 +115,7 @@ export async function createFetcher(
 
 	const tokenUrl = new URL('/.oidc/token', issuer).href;
 	const getToken = async (): Promise<string> => {
-		const res = await fetch(tokenUrl, {
+		const res = await requestUrlFetch(tokenUrl, {
 			method: 'POST',
 			headers: {
 				authorization: `Basic ${b64url(
@@ -97,7 +139,7 @@ export async function createFetcher(
 
 	const send = (url: string, init: RequestInit, method: string) =>
 		proof(url, method).then((dpop) =>
-			fetch(url, {
+			requestUrlFetch(url, {
 				...init,
 				method,
 				headers: {
@@ -137,7 +179,7 @@ export async function createClientCredentials(
 		url: string,
 		init: RequestInit = {},
 	): Promise<T> {
-		const res = await fetch(url, init);
+		const res = await requestUrlFetch(url, init);
 		if (!res.ok) throw new Error(`${what} failed (${res.status})`);
 		return (await res.json()) as T;
 	}

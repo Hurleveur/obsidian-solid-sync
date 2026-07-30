@@ -3,6 +3,30 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 export const normalizePath = (p) => p.replace(/\/+$/, '');
+
+// Stands in for Obsidian's requestUrl, backed by Node's fetch, so the node test
+// suite exercises the same requestUrl-shaped path the plugin runs in Obsidian.
+export async function requestUrl(opts) {
+	const res = await fetch(opts.url, {
+		method: opts.method ?? 'GET',
+		headers: opts.headers,
+		body: opts.body,
+	});
+	const arrayBuffer = await res.arrayBuffer();
+	const text = Buffer.from(arrayBuffer).toString('utf8');
+	if (opts.throw !== false && (res.status < 200 || res.status >= 300)) {
+		throw new Error(`Request failed, status ${res.status}`);
+	}
+	return {
+		status: res.status,
+		headers: Object.fromEntries(res.headers.entries()),
+		arrayBuffer,
+		text,
+		get json() {
+			return JSON.parse(text);
+		},
+	};
+}
 export class Notice {
 	constructor(msg) {
 		if (msg) console.log('  [notice]', String(msg).replace(/\n/g, ' | '));
