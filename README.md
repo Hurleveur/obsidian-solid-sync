@@ -73,7 +73,8 @@ There is no polling. Pod-side changes arrive on the next sync, so leave **Sync a
 
 ## How it works
 
-- `.md` resources sync both ways, byte for byte, with no injected frontmatter.
+- `.md` resources sync both ways, byte for byte, with no injected frontmatter — except
+  the read-only marker below, on notes the pod refuses you.
 - Attachments — images, PDFs, HTML, audio, video, anything else with an extension —
   sync both ways as bytes, keeping their own filename, so `![[picture.png]]` in a note
   resolves on every machine. Anything over the size limit — 10 MB by default,
@@ -83,12 +84,18 @@ There is no polling. Pod-side changes arrive on the next sync, so leave **Sync a
   source fenced and `solid-url` in the properties. Editing the fenced text pushes it
   back as that resource's own content type — same as an ordinary note, gated on
   permission, never on what it is.
-- `solid-readonly: true` appears in those properties when **that resource's** own
-  `WAC-Allow` said you may not write it — a friend's shared note, say. It is a
-  reading of the pod's answer, not a rule the plugin enforces: your own resources are
-  never labelled, a server that sends no header is never labelled either, and an edit
-  is attempted regardless. Only the fenced body is compared between the two sides, so
-  the label changing as access changes never looks like the resource changing.
+- `solid-readonly: true` appears in a note's properties when **that resource's** own
+  `WAC-Allow` said you may not write it — a friend's shared note, say. It is a reading
+  of the pod's answer, not a rule the plugin enforces: your own resources are never
+  labelled, a server that sends no header is never labelled either, and an edit is
+  attempted regardless.
+
+  This is the **one** exception to markdown being stored byte for byte, and it applies
+  only where the pod refused. One property, never a fence, so links, embeds, graph and
+  Bases keep working. It goes into the note's own properties if it has them, comes off
+  again the moment access is granted, and is taken back off before any push. Only what
+  the pod itself holds is compared between the two sides, so the label appearing or
+  disappearing never reads as the resource changing.
 - Resources without an extension become `<name>.md` notes — a pod's own `README` is
   stored exactly this way.
 

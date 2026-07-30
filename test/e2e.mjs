@@ -208,6 +208,21 @@ assert.equal(
 );
 ok('an older wrapper is refreshed in place, not reported as a conflict');
 
+// 6c. the same for a markdown note that was marked read-only ----------------
+// Access granted since the note was pulled: our property has to come back off
+// without the note reading as changed on both sides.
+write('Pod/e2e-pull.md', `---\nsolid-readonly: true\n---\n# from pod\n`);
+plugin.state['Pod/e2e-pull.md'].pod = 'stale';
+plugin.state['Pod/e2e-pull.md'].local = 0;
+await runSync(plugin);
+assert.equal(read('Pod/e2e-pull.md'), '# from pod\n', 'the label is gone, the note is not');
+assert.equal(
+	fs.readdirSync(path.join(root, 'Pod')).filter((f) => f.includes('conflict')).length,
+	0,
+	'losing the read-only label is not a conflict either',
+);
+ok('a note marked read-only loses the label once access is granted');
+
 // 7. conflict: both sides change -------------------------------------------
 write('Pod/e2e-local.md', '# local version\n');
 await put('e2e-local.md', '# pod version\n');
@@ -326,6 +341,24 @@ if (POD_2) {
 			? `  ok  ${sharedWrapped.length} fenced note(s) from a pod we cannot write are marked read-only`
 			: '   (no fenced resource on POD_URL_2 — read-only labelling checked in access.mjs)',
 	);
+
+	// An ordinary markdown note on a pod we cannot write is marked too — one
+	// property, no fence, so links and embeds still work. This is the one case
+	// where a note is not byte-for-byte, and only this case.
+	const sharedNotes = shared.filter((f) => !sharedWrapped.includes(f));
+	for (const f of sharedNotes) {
+		const text = fs.readFileSync(path.join(root2, f.path), 'utf8');
+		assert.ok(
+			text.startsWith('---\nsolid-readonly: true\n'),
+			`${f.path} is markdown we cannot write, and says so in its properties`,
+		);
+		assert.doesNotMatch(text, /```/, 'a note is never fenced — that would break its links');
+	}
+	if (sharedNotes.length) ok('markdown we cannot write is marked, without a fence');
+
+	// A second run must not read our own property as the pod having changed.
+	assert.match(await runSync(two), /^0 pulled, 0 pushed/);
+	ok('the read-only property does not make the note look changed');
 
 	fs.appendFileSync(path.join(root2, shared[0].path), '\nnot mine to change\n');
 	fs.writeFileSync(path.join(root2, 'Pod/e2e-two.md'), '# written past a 403\n');

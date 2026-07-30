@@ -8,8 +8,10 @@ import {
 	canWriteFrom,
 	deletedLocally,
 	folderClash,
+	markReadOnly,
 	matchesLocal,
 	migrateSettings,
+	stripReadOnly,
 	unwrapNonMarkdown,
 	wrapNonMarkdown,
 } from './sync.bundle.mjs';
@@ -185,6 +187,25 @@ assert.doesNotMatch(
 	/solid-readonly/,
 	'an ACP server sent no WAC-Allow — it refused nothing, so claim nothing',
 );
+
+// A markdown note carries the same answer, as one property and never a fence —
+// fencing it would break the links, embeds and graph the notes exist for.
+assert.equal(markReadOnly('# hello\n'), '---\nsolid-readonly: true\n---\n# hello\n');
+assert.equal(stripReadOnly(markReadOnly('# hello\n')), '# hello\n');
+
+// A note with properties of its own keeps one block, not two — a second one is
+// not frontmatter, it is body text with dashes in it.
+const own = '---\ntitle: mine\ntags: [a]\n---\n# hello\n';
+assert.equal(markReadOnly(own), '---\nsolid-readonly: true\ntitle: mine\ntags: [a]\n---\n# hello\n');
+assert.equal(stripReadOnly(markReadOnly(own)), own, 'the note gets its own properties back');
+
+// Never marked, or marked and pushed already: leave it exactly as it is.
+assert.equal(stripReadOnly('# hello\n'), '# hello\n');
+assert.equal(stripReadOnly(own), own);
+assert.equal(stripReadOnly(''), '');
+// Only our own property is removed, never a `solid-readonly` further down.
+const notOurs = '---\ntitle: mine\nsolid-readonly: true\n---\nx\n';
+assert.equal(stripReadOnly(notOurs), notOurs);
 
 // Whatever the label, the body round-trips and the type is preserved.
 for (const canWrite of [true, false, undefined]) {

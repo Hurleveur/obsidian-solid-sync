@@ -176,6 +176,43 @@ export function wrapNonMarkdown(
 	].join('\n');
 }
 
+/** The one property added to a note, and only to one the pod refuses us. */
+const READONLY = '---\nsolid-readonly: true\n';
+
+/**
+ * Says in the note that this resource is not ours to change, so the vault answers
+ * that before an edit rather than after one is refused. A markdown note is stored
+ * byte for byte, so this is the single exception to that — and it applies only
+ * where the pod actually refused, never to a note you can write.
+ */
+export function markReadOnly(note: string): string {
+	// Into the note's own properties when it has them: a second frontmatter block
+	// is not frontmatter, it is body text with dashes in it.
+	return note.startsWith('---\n')
+		? READONLY + note.slice(4)
+		: `${READONLY}---\n${note}`;
+}
+
+/**
+ * What the resource itself holds, with our presentation of it taken back off —
+ * `null` when the note is too mangled to say. This is what the two sides are
+ * compared on, so how we present a resource can change without that ever reading
+ * as the resource changing.
+ */
+function podText(kind: Kind, note: string): string | null {
+	return kind === 'wrapped'
+		? (unwrapNonMarkdown(note)?.body ?? null)
+		: stripReadOnly(note);
+}
+
+/** Reverses `markReadOnly`, and leaves a note that was never marked untouched. */
+export function stripReadOnly(note: string): string {
+	if (!note.startsWith(READONLY)) return note;
+	const rest = note.slice(READONLY.length);
+	// The note had no properties of its own, so the block we opened closes with it.
+	return rest.startsWith('---\n') ? rest.slice(4) : `---\n${rest}`;
+}
+
 const WRAP_PATTERN =
 	/^---\n(?:.*\n)*?solid-content-type: (.+)\n(?:.*\n)*?---\n\n```[^\n]*\n([\s\S]*?)\n```\n?$/;
 
@@ -385,16 +422,15 @@ async function syncPod(
 				}
 				let local = f.stat.mtime;
 				if (!(await matchesLocal(vault, f, podCopy))) {
-					// A wrapped note's frontmatter and fence are ours, not the pod's, so
-					// changing how we write them is not a change to the resource. Only
-					// the fenced body decides: rewrite the wrapper when that is all that
-					// moved, rather than announcing a conflict against ourselves.
-					const body = unwrapNonMarkdown(await vault.read(f))?.body;
-					const podBody =
-						typeof podCopy === 'string'
-							? unwrapNonMarkdown(podCopy)?.body
-							: undefined;
-					if (entry.kind === 'wrapped' && body !== undefined && body === podBody) {
+					// What we add to present a resource — the fence, the read-only
+					// property — is ours, not the pod's, so a change in it is not a
+					// change to the resource. Compare what the pod actually holds and
+					// refresh our own presentation in place when that is all that moved,
+					// rather than announcing a conflict against ourselves.
+					const mine = podText(entry.kind, await vault.read(f));
+					const theirs =
+						typeof podCopy === 'string' ? podText(entry.kind, podCopy) : null;
+					if (mine !== null && mine === theirs) {
 						local = (await writeFile(vault, path, podCopy)).stat.mtime;
 					} else {
 						// Named after the pod revision, so repeated syncs refresh one copy
@@ -542,7 +578,9 @@ async function readRemote(
 	// This resource's own WAC-Allow, not the container's: sharing one resource out
 	// of a container you may not write is ordinary Solid, so the answer that
 	// belongs in the note is the one that came back with the note's own bytes.
-	return kind === 'note' ? body : wrapNonMarkdown(r, body, canWriteFrom(res.headers));
+	const canWrite = canWriteFrom(res.headers);
+	if (kind !== 'note') return wrapNonMarkdown(r, body, canWrite);
+	return canWrite === false ? markReadOnly(body) : body;
 }
 
 async function pull(
@@ -596,8 +634,13 @@ async function push(
 				? wrapped.contentType
 				: 'text/plain';
 		body = wrapped.body;
+	} else if (type === 'text/markdown') {
+		// Access granted since the note was marked: send the note, not our label.
+		// ponytail: the local copy keeps the stale label until the pod side next
+		// moves and the note is pulled. Rewrite it here if that ever grates.
+		body = stripReadOnly(await vault.read(file));
 	} else {
-		body = type === 'text/markdown' ? await vault.read(file) : await vault.readBinary(file);
+		body = await vault.readBinary(file);
 	}
 	const res = await fetcher(url, {
 		method: 'PUT',
