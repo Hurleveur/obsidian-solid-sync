@@ -11,6 +11,44 @@ Built on the official `obsidian-sample-plugin` scaffold. No runtime dependencies
 DPoP authentication uses WebCrypto, and RDF is read as JSON-LD through the pod's own
 content negotiation, so no `@inrupt/*` client and no RDF parser are bundled.
 
+## Install
+
+Not in the community plugin store yet, so the easiest route is BRAT, which installs
+from this repo's releases and keeps the plugin updated afterwards.
+
+### With BRAT
+
+[BRAT](https://github.com/TfTHacker/obsidian42-brat) installs plugins straight from
+GitHub releases. It is in the store itself, so it installs normally.
+
+1. **Settings → Community plugins → Browse**, search **BRAT**, install and enable it.
+2. Command palette → **BRAT: Plugins: Add a beta plugin for testing (with or without
+   version)**.
+3. Paste `Hurleveur/obsidian-solid-sync` — the full `https://github.com/…` URL works
+   too. Leave the version on **Latest version**, keep **Enable after installing the
+   plugin** checked, and select **Add plugin**.
+4. It arrives enabled under **Community plugins**. Continue with [Setup](#setup).
+
+"Beta" is only BRAT's word for anything outside the store. It installs whatever the
+release holds, and these are ordinary tagged releases, not prereleases.
+
+Updates are not automatic unless you turn on **Auto-update plugins at startup** in
+BRAT's settings. Otherwise run **BRAT: Plugins: Check for updates to all beta plugins
+and UPDATE** when you want them. Choosing a specific tag in step 3 instead of
+**Latest version** pins it, and auto-update deliberately skips pinned plugins.
+
+Once this is in the store, **BRAT: Plugins: Update a graduated plugin to stable
+release and remove from BRAT** hands it over without reinstalling anything.
+
+### By hand
+
+Download `main.js` and `manifest.json` from the
+[latest release](https://github.com/Hurleveur/obsidian-solid-sync/releases/latest) —
+the two files individually, not the source zip — or build them with `npm run build`.
+Put both in `<vault>/.obsidian/plugins/solid-sync/`, then refresh the list under
+**Settings → Community plugins** and enable **Solid Pod Sync**. There is no
+`styles.css`: the plugin adds no CSS.
+
 ## Setup
 
 1. **Settings → Solid Pod Sync → Add pod**, then set the container URL
@@ -133,11 +171,10 @@ A plugin is two files in `<vault>/.obsidian/plugins/solid-sync/`: `main.js` and
 
 - **Send it to one person**: `npm run build`, then share those files. They drop the
   folder into their vault and enable it under **Settings → Community plugins**.
-- **Install from GitHub**: push this repo, create a release whose tag exactly matches
-  the `version` in `manifest.json` (no leading `v`), and attach `main.js` and
-  `manifest.json` as individual assets. Others install it with
-  [BRAT](https://github.com/TfTHacker/obsidian42-brat) by entering the repo name — no
-  review process, and BRAT keeps it updated.
+- **Cut a release**: `npm version <x.y.z>`, then tag it with that exact version — no
+  leading `v`, matching `manifest.json` — and attach `main.js` and `manifest.json` as
+  individual assets, not a zip. That is all [BRAT](#with-brat) reads; a release
+  missing `main.js` is refused with the release named in the error. No review process.
 - **Inside a shared vault repo**: commit the code files — never `data.json`,
   which holds the token — and add the plugin
   id to `community-plugins.json` so it arrives enabled. Vaults usually gitignore
