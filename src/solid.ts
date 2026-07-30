@@ -237,6 +237,9 @@ const IANA = 'http://www.w3.org/ns/iana/media-types/';
 const LDP_CONTAINS = 'http://www.w3.org/ns/ldp#contains';
 const DC_MODIFIED = 'http://purl.org/dc/terms/modified';
 const POSIX_SIZE = 'http://www.w3.org/ns/posix/stat#size';
+// Community Solid Server publishes the media type as this literal instead of an
+// IANA-namespaced @type — servers that do neither leave content type unknown.
+const MA_FORMAT = 'http://www.w3.org/ns/ma-ont#format';
 
 type JsonLdNode = Record<string, unknown> & { '@id'?: string };
 
@@ -255,7 +258,13 @@ function collect(graph: JsonLdNode[], id: string, predicate: string): unknown[] 
 
 function describe(graph: JsonLdNode[], url: string): PodResource {
 	const types = collect(graph, url, '@type').map(String);
-	const mediaType = types.find((t) => t.startsWith(IANA));
+	const ianaType = types.find((t) => t.startsWith(IANA));
+	const format = collect(graph, url, MA_FORMAT)[0] as
+		| { '@value'?: string }
+		| undefined;
+	const mediaType = ianaType
+		? ianaType.slice(IANA.length).replace(/#Resource$/, '')
+		: (format?.['@value'] ?? '');
 	const modified = collect(graph, url, DC_MODIFIED)[0] as
 		| { '@value'?: string }
 		| undefined;
@@ -269,9 +278,7 @@ function describe(graph: JsonLdNode[], url: string): PodResource {
 		// Absent on servers that do not publish it — 0 then means "unknown", and
 		// an unknown size must never look oversized.
 		size: Number(size?.['@value'] ?? 0),
-		contentType: mediaType
-			? mediaType.slice(IANA.length).replace(/#Resource$/, '')
-			: '',
+		contentType: mediaType,
 	};
 }
 
