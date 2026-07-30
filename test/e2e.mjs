@@ -182,6 +182,30 @@ ok('editing a wrapped note pushes the unwrapped body back with its content type'
 assert.match(await runSync(plugin), /^0 pulled, 0 pushed/);
 ok('pushed wrapped note does not bounce back on the next run');
 
+// 6b. a note wrapped by an older version is not a conflict against itself ----
+// The frontmatter and fence are ours; only the fenced body is the pod's. Notes
+// pulled before `solid-readonly` was dropped must have their wrapper refreshed,
+// never announced as a conflict — nothing about the resource changed.
+const legacyPath = 'Pod/e2e-data.ttl.md';
+write(
+	legacyPath,
+	read(legacyPath).replace(
+		/^(solid-content-type: .+)$/m,
+		'$1\nsolid-readonly: true',
+	),
+);
+// Move both sides' recorded state so the run takes the both-changed branch.
+plugin.state[legacyPath].pod = 'stale';
+plugin.state[legacyPath].local = 0;
+assert.match(await runSync(plugin), /^1 pulled|^0 pulled, 0 pushed/);
+assert.doesNotMatch(read(legacyPath), /solid-readonly/);
+assert.equal(
+	fs.readdirSync(path.join(root, 'Pod')).filter((f) => f.includes('conflict')).length,
+	0,
+	'a wrapper-only difference breeds no conflict copy',
+);
+ok('an older wrapper is refreshed in place, not reported as a conflict');
+
 // 7. conflict: both sides change -------------------------------------------
 write('Pod/e2e-local.md', '# local version\n');
 await put('e2e-local.md', '# pod version\n');

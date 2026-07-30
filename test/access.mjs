@@ -10,6 +10,7 @@ import {
 	folderClash,
 	matchesLocal,
 	migrateSettings,
+	unwrapNonMarkdown,
 } from './sync.bundle.mjs';
 
 // --- WAC-Allow ------------------------------------------------------------
@@ -133,5 +134,34 @@ assert.equal(await matchesLocal(vaultOf('', bin(1, 2, 3)), {}, bin(1, 2, 3)), tr
 assert.equal(await matchesLocal(vaultOf('', bin(1, 2, 3)), {}, bin(1, 2, 4)), false);
 assert.equal(await matchesLocal(vaultOf('', bin(1, 2)), {}, bin(1, 2, 3)), false);
 assert.equal(await matchesLocal(vaultOf('', bin()), {}, bin()), true, 'both empty');
+
+// --- the fenced wrapper is ours, and only the body is the pod's ------------
+const wrap = (props, body) =>
+	`---\nsolid-url: https://pod.example.eu/x/README\n${props}---\n\n\`\`\`plain\n${body}\n\`\`\`\n`;
+
+assert.deepEqual(unwrapNonMarkdown(wrap('solid-content-type: text/turtle\n', '<#a> <#b> "c".')), {
+	contentType: 'text/turtle',
+	body: '<#a> <#b> "c".',
+});
+
+// Notes pulled by an older version carry `solid-readonly: true`. Dropping that
+// line from the wrapper must not read as the resource itself having changed —
+// which is what bred a conflict copy against the note's own former format.
+const legacy = wrap('solid-content-type: text/plain\nsolid-readonly: true\n', 'hello');
+assert.notEqual(legacy, wrap('solid-content-type: text/plain\n', 'hello'));
+assert.equal(unwrapNonMarkdown(legacy)?.body, 'hello');
+assert.equal(
+	unwrapNonMarkdown(legacy)?.body,
+	unwrapNonMarkdown(wrap('solid-content-type: text/plain\n', 'hello'))?.body,
+	'same body, different wrapper — never a conflict',
+);
+
+// A multi-line body keeps every line, and an empty one round-trips.
+assert.equal(unwrapNonMarkdown(wrap('solid-content-type: text/plain\n', 'a\n\nb'))?.body, 'a\n\nb');
+assert.equal(unwrapNonMarkdown(wrap('solid-content-type: text/plain\n', ''))?.body, '');
+
+// Not a wrapped note at all, or a fence the user broke: refuse, never guess.
+assert.equal(unwrapNonMarkdown('# an ordinary note\n'), null);
+assert.equal(unwrapNonMarkdown('---\nsolid-content-type: text/plain\n---\n\nno fence\n'), null);
 
 console.log('access rules: all checks passed');

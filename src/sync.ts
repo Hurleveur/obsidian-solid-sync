@@ -42,7 +42,7 @@ interface Report {
 /**
  * How a pod resource is represented in the vault.
  *  note    — markdown, stored verbatim
- *  wrapped — RDF and other pod text, fenced inside a read-only note
+ *  wrapped — RDF and other pod text, fenced inside a note
  *  raw     — everything else (images, PDFs, HTML, audio), copied byte for byte
  */
 type Kind = 'note' | 'wrapped' | 'raw';
@@ -167,8 +167,14 @@ function wrapNonMarkdown(r: PodResource, body: string): string {
 const WRAP_PATTERN =
 	/^---\n(?:.*\n)*?solid-content-type: (.+)\n(?:.*\n)*?---\n\n```[^\n]*\n([\s\S]*?)\n```\n?$/;
 
-/** Reverses `wrapNonMarkdown`, so an edit to the fenced source can be sent back. */
-function unwrapNonMarkdown(note: string): { body: string; contentType: string } | null {
+/**
+ * Reverses `wrapNonMarkdown`, so an edit to the fenced source can be sent back.
+ * Tolerates extra properties, including `solid-readonly: true` from notes pulled
+ * by an older version: the wrapper is ours, and only the fenced body is the pod's.
+ */
+export function unwrapNonMarkdown(
+	note: string,
+): { body: string; contentType: string } | null {
 	const m = WRAP_PATTERN.exec(note);
 	return m ? { contentType: m[1] ?? '', body: m[2] ?? '' } : null;
 }
@@ -365,11 +371,25 @@ async function syncPod(
 					report.skipped.push(`${path} (no read access)`);
 					continue;
 				}
+				let local = f.stat.mtime;
 				if (!(await matchesLocal(vault, f, podCopy))) {
-					// Named after the pod revision, so repeated syncs refresh one copy
-					// instead of breeding a new file every run.
-					await writeFile(vault, conflictPath(path, r.modified), podCopy);
-					report.conflicts.push(path);
+					// A wrapped note's frontmatter and fence are ours, not the pod's, so
+					// changing how we write them is not a change to the resource. Only
+					// the fenced body decides: rewrite the wrapper when that is all that
+					// moved, rather than announcing a conflict against ourselves.
+					const body = unwrapNonMarkdown(await vault.read(f))?.body;
+					const podBody =
+						typeof podCopy === 'string'
+							? unwrapNonMarkdown(podCopy)?.body
+							: undefined;
+					if (entry.kind === 'wrapped' && body !== undefined && body === podBody) {
+						local = (await writeFile(vault, path, podCopy)).stat.mtime;
+					} else {
+						// Named after the pod revision, so repeated syncs refresh one copy
+						// instead of breeding a new file every run.
+						await writeFile(vault, conflictPath(path, r.modified), podCopy);
+						report.conflicts.push(path);
+					}
 				}
 				// Mark each side as seen whether or not a copy was written. The note
 				// keeps its local text, the pod keeps its own, and whichever the user
@@ -377,7 +397,7 @@ async function syncPod(
 				state[path] = {
 					url: r.url,
 					pod: r.modified,
-					local: f.stat.mtime,
+					local,
 				};
 			} else if (podChanged) {
 				await pull(vault, fetcher, entry, path, state, report);
@@ -388,11 +408,22 @@ async function syncPod(
 				// or without the container saying so at all. What we are wrapping never
 				// decides this, only the pod's own answer does. The cost of being wrong
 				// is one refused PUT, once per edit.
+				const wrapped =
+					entry.kind === 'wrapped'
+						? unwrapNonMarkdown(await vault.read(f))
+						: null;
 				if (!authenticated) {
 					markUnpushable(state, path, r.url, f.stat.mtime, r.modified);
 					report.skipped.push(`${path} (local edit, no credentials)`);
+				} else if (entry.kind === 'wrapped' && !wrapped) {
+					// Say what is actually wrong. Reporting this as refused access would
+					// blame the pod for a note whose fenced source block was reshaped.
+					markUnpushable(state, path, r.url, f.stat.mtime, r.modified);
+					report.skipped.push(
+						`${path} (local edit, fenced source block no longer parses)`,
+					);
 				} else if (
-					await push(fetcher, vault, f, prev.url, state, entry.kind === 'wrapped')
+					await push(fetcher, vault, f, prev.url, state, wrapped ?? undefined)
 				) {
 					pushedPaths.push(path);
 					report.pushed++;
@@ -526,10 +557,10 @@ async function pull(
  * throwing: a read-only pod refuses every write, and one refusal must not abandon
  * the rest of the run — the remaining files, and every pod after this one.
  *
- * `wrapped` reverses `wrapNonMarkdown`: the note on disk is frontmatter and a fence
- * around the real body, not the pod bytes themselves, so those have to come back out
- * before the PUT — and the content-type goes back to what the fence recorded, not
- * whatever `mimeOf` guesses from a path that always ends in `.md`.
+ * `wrapped` is the already-unwrapped body of a fenced note: what is on disk is our
+ * frontmatter and fence, not the pod bytes, so the caller takes those off first and
+ * hands over what the resource itself holds — along with the content type the fence
+ * recorded, which beats what `mimeOf` guesses from a path that always ends in `.md`.
  */
 async function push(
 	fetcher: Fetcher,
@@ -537,17 +568,19 @@ async function push(
 	file: TFile,
 	url: string,
 	state: SyncState,
-	wrapped = false,
+	wrapped?: { body: string; contentType: string },
 ): Promise<boolean> {
 	let type = mimeOf(file.path);
 	let body: string | ArrayBuffer;
 	if (wrapped) {
-		const unwrapped = unwrapNonMarkdown(await vault.read(file));
-		// Malformed fence — refuse rather than send frontmatter and backticks to the
-		// pod as if they were the resource's own content.
-		if (!unwrapped) return false;
-		type = unwrapped.contentType || type;
-		body = unwrapped.body;
+		// `unknown` is what the wrapper writes when the pod never declared a type,
+		// and it is not a media type — sending it back would be a malformed header.
+		// The `.md` the path ends in is our own invention, so text/plain over it.
+		type =
+			wrapped.contentType && wrapped.contentType !== 'unknown'
+				? wrapped.contentType
+				: 'text/plain';
+		body = wrapped.body;
 	} else {
 		body = type === 'text/markdown' ? await vault.read(file) : await vault.readBinary(file);
 	}
