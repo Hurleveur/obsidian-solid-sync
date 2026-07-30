@@ -63,9 +63,9 @@ console.log('1. pull:', await runSync(plugin));
 assert.equal(read('Pod/e2e-pull.md'), '# from pod\n');
 ok('markdown pulled verbatim');
 const wrapped = read('Pod/e2e-data.ttl.md');
-assert.match(wrapped, /solid-readonly: true/);
+assert.doesNotMatch(wrapped, /solid-readonly/);
 assert.match(wrapped, /```turtle\n<#a> <#b> "c"\.\n```/);
-ok('turtle pulled as a read-only note with fenced source');
+ok('turtle pulled as a fenced note, with no permission claim baked in');
 
 // 1b. extensionless markdown (the pod's own README is stored this way) -------
 // It must land on a .md path, or the vault cannot see it and the next sync
@@ -166,16 +166,21 @@ fs.unlinkSync(path.join(root, 'Pod/e2e-big-local.md'));
 plugin.settings.maxFileMB = 10;
 await runSync(plugin);
 
-// 6. read-only note is never pushed ----------------------------------------
-write('Pod/e2e-data.ttl.md', 'tampered\n');
-const roRun = await runSync(plugin);
-assert.match(roRun, /skipped/);
-assert.equal(
-	await (await fetcher(new URL('e2e-data.ttl', POD).href)).text(),
-	'<#a> <#b> "c".\n',
+// 6. editing a wrapped RDF note pushes the unwrapped body back -------------
+// Read-only is a fact about what the pod says, never about what the note wraps.
+write(
+	'Pod/e2e-data.ttl.md',
+	wrapped.replace('<#a> <#b> "c".', '<#a> <#b> "edited".'),
 );
-ok('edit to a read-only note is skipped, pod untouched');
 await runSync(plugin);
+// The fence trims trailing whitespace on the way in, so a round trip through an
+// edit does too — insignificant for turtle, and the price of editing as text.
+const ttlAfterEdit = await fetcher(new URL('e2e-data.ttl', POD).href);
+assert.equal(await ttlAfterEdit.text(), '<#a> <#b> "edited".');
+assert.equal(ttlAfterEdit.headers.get('content-type')?.split(';')[0], 'text/turtle');
+ok('editing a wrapped note pushes the unwrapped body back with its content type');
+assert.match(await runSync(plugin), /^0 pulled, 0 pushed/);
+ok('pushed wrapped note does not bounce back on the next run');
 
 // 7. conflict: both sides change -------------------------------------------
 write('Pod/e2e-local.md', '# local version\n');

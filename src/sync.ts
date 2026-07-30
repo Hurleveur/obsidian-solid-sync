@@ -26,7 +26,6 @@ export interface FileState {
 	url: string;
 	pod: string;
 	local: number;
-	readOnly: boolean;
 }
 
 export type SyncState = Record<string, FileState>;
@@ -150,13 +149,12 @@ const fence = (contentType: string) =>
 	contentType.split('/')[1]?.replace(/^.*\+/, '') ??
 	'text';
 
-/** Read-only resources become notes with their source fenced and the URL in properties. */
+/** Non-markdown pod text becomes a note with its source fenced and the URL in properties. */
 function wrapNonMarkdown(r: PodResource, body: string): string {
 	return [
 		'---',
 		`solid-url: ${r.url}`,
 		`solid-content-type: ${r.contentType || 'unknown'}`,
-		'solid-readonly: true',
 		'---',
 		'',
 		'```' + fence(r.contentType),
@@ -164,6 +162,15 @@ function wrapNonMarkdown(r: PodResource, body: string): string {
 		'```',
 		'',
 	].join('\n');
+}
+
+const WRAP_PATTERN =
+	/^---\n(?:.*\n)*?solid-content-type: (.+)\n(?:.*\n)*?---\n\n```[^\n]*\n([\s\S]*?)\n```\n?$/;
+
+/** Reverses `wrapNonMarkdown`, so an edit to the fenced source can be sent back. */
+function unwrapNonMarkdown(note: string): { body: string; contentType: string } | null {
+	const m = WRAP_PATTERN.exec(note);
+	return m ? { contentType: m[1] ?? '', body: m[2] ?? '' } : null;
 }
 
 async function writeFile(
@@ -371,32 +378,26 @@ async function syncPod(
 					url: r.url,
 					pod: r.modified,
 					local: f.stat.mtime,
-					readOnly: entry.kind === 'wrapped',
 				};
 			} else if (podChanged) {
 				await pull(vault, fetcher, entry, path, state, report);
 			} else if (localChanged) {
-				const wrapped = entry.kind === 'wrapped';
-				// Deliberately gated on `authenticated`, not `writable`: writing an
-				// existing resource needs permission on that resource, which a pod
-				// can grant without granting the container — sharing one note out of
-				// a container you may not otherwise write is an ordinary Solid setup.
-				// The cost of being wrong is one refused PUT, once per edit.
-				if (prev?.readOnly || !authenticated) {
-					markUnpushable(state, path, r.url, f.stat.mtime, r.modified, wrapped);
-					report.skipped.push(`${path} (local edit, read-only)`);
-				} else if (await push(fetcher, vault, f, prev.url, state)) {
+				// Gated on `authenticated`, not `writable`, and not on the resource's
+				// kind: writing an existing resource — RDF or not — needs permission on
+				// that resource, which a pod can grant without granting the container,
+				// or without the container saying so at all. What we are wrapping never
+				// decides this, only the pod's own answer does. The cost of being wrong
+				// is one refused PUT, once per edit.
+				if (!authenticated) {
+					markUnpushable(state, path, r.url, f.stat.mtime, r.modified);
+					report.skipped.push(`${path} (local edit, no credentials)`);
+				} else if (
+					await push(fetcher, vault, f, prev.url, state, entry.kind === 'wrapped')
+				) {
 					pushedPaths.push(path);
 					report.pushed++;
 				} else {
-					markUnpushable(
-						state,
-						path,
-						prev.url,
-						f.stat.mtime,
-						r.modified,
-						wrapped,
-					);
+					markUnpushable(state, path, prev.url, f.stat.mtime, r.modified);
 					report.skipped.push(`${path} (local edit, no write access)`);
 				}
 			}
@@ -468,11 +469,9 @@ async function syncPod(
 /**
  * Records a local edit we were not allowed to send, marking both sides seen so the
  * note keeps the user's text and the skip is reported once rather than in every
- * summary from here on.
- *
- * `readOnly` stays a fact about the resource — a wrapped RDF note is never pushable
- * — and not about this refusal. A pod that later grants write access would otherwise
- * find every note stuck, since the flag alone decides whether a push is attempted.
+ * summary from here on. Nothing here is permanent: `local` catches up to the
+ * current mtime, so the next *edit* tries again — the pod's answer is never cached
+ * past the one attempt it was given for.
  */
 function markUnpushable(
 	state: SyncState,
@@ -480,9 +479,8 @@ function markUnpushable(
 	url: string,
 	local: number,
 	pod: string,
-	readOnly: boolean,
 ) {
-	state[path] = { url, pod, local, readOnly };
+	state[path] = { url, pod, local };
 }
 
 /**
@@ -519,7 +517,6 @@ async function pull(
 		url: r.url,
 		pod: r.modified,
 		local: file.stat.mtime,
-		readOnly: kind === 'wrapped',
 	};
 	report.pulled++;
 }
@@ -528,6 +525,11 @@ async function pull(
  * Writes one file to the pod. Returns false when the pod refused it, rather than
  * throwing: a read-only pod refuses every write, and one refusal must not abandon
  * the rest of the run — the remaining files, and every pod after this one.
+ *
+ * `wrapped` reverses `wrapNonMarkdown`: the note on disk is frontmatter and a fence
+ * around the real body, not the pod bytes themselves, so those have to come back out
+ * before the PUT — and the content-type goes back to what the fence recorded, not
+ * whatever `mimeOf` guesses from a path that always ends in `.md`.
  */
 async function push(
 	fetcher: Fetcher,
@@ -535,23 +537,27 @@ async function push(
 	file: TFile,
 	url: string,
 	state: SyncState,
+	wrapped = false,
 ): Promise<boolean> {
-	const type = mimeOf(file.path);
+	let type = mimeOf(file.path);
+	let body: string | ArrayBuffer;
+	if (wrapped) {
+		const unwrapped = unwrapNonMarkdown(await vault.read(file));
+		// Malformed fence — refuse rather than send frontmatter and backticks to the
+		// pod as if they were the resource's own content.
+		if (!unwrapped) return false;
+		type = unwrapped.contentType || type;
+		body = unwrapped.body;
+	} else {
+		body = type === 'text/markdown' ? await vault.read(file) : await vault.readBinary(file);
+	}
 	const res = await fetcher(url, {
 		method: 'PUT',
 		headers: { 'content-type': type },
-		body:
-			type === 'text/markdown'
-				? await vault.read(file)
-				: await vault.readBinary(file),
+		body,
 	});
 	if (!res.ok) return false;
-	state[file.path] = {
-		url,
-		pod: '',
-		local: file.stat.mtime,
-		readOnly: false,
-	};
+	state[file.path] = { url, pod: '', local: file.stat.mtime };
 	return true;
 }
 

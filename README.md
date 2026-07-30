@@ -79,9 +79,10 @@ There is no polling. Pod-side changes arrive on the next sync, so leave **Sync a
   resolves on every machine. Anything over the size limit — 10 MB by default,
   settable, 0 to disable — is reported as skipped and left untouched on both sides,
   never mistaken for a deletion.
-- Other text resources (turtle, JSON-LD, plain text) are pulled read-only into a note
-  with the source fenced and `solid-url` in the properties. Local edits to those are
-  never pushed.
+- Other text resources (turtle, JSON-LD, plain text) are pulled into a note with the
+  source fenced and `solid-url` in the properties. Editing the fenced text pushes it
+  back as that resource's own content type — same as an ordinary note, gated on
+  permission, never on what it is.
 - Resources without an extension become `<name>.md` notes — a pod's own `README` is
   stored exactly this way.
 
@@ -138,8 +139,6 @@ A plugin is two files in `<vault>/.obsidian/plugins/solid-sync/`: `main.js` and
 end to end. It writes to a pod and deletes notes, so it should not go out to
 strangers on a machine review alone. Worth settling before submitting:
 
-- The `fetch` warnings under [Notes](#notes) — reviewers ask why `requestUrl`
-  is not used, so the answer belongs in the PR.
 - The **Log in** flow is Community Solid Server specific. Other servers need
   credentials pasted by hand, which the settings UI should say plainly.
 - Sync behaviour under a second editor. The single-editor assumption holds for
