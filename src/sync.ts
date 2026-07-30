@@ -16,6 +16,7 @@ import type SolidSyncPlugin from './main';
 import type { PodConfig } from './settings';
 import {
 	anonymousFetch,
+	canWriteFrom,
 	createFetcher,
 	walk,
 	type Fetcher,
@@ -149,12 +150,23 @@ const fence = (contentType: string) =>
 	contentType.split('/')[1]?.replace(/^.*\+/, '') ??
 	'text';
 
-/** Non-markdown pod text becomes a note with its source fenced and the URL in properties. */
-function wrapNonMarkdown(r: PodResource, body: string): string {
+/**
+ * Non-markdown pod text becomes a note with its source fenced and the URL in
+ * properties. `canWrite` is what the pod said about this resource, so
+ * `solid-readonly` states a permission and never a kind — absent when the pod
+ * grants write, and absent again when it sent no header at all, since a server
+ * that has refused nothing must not be quoted as refusing.
+ */
+export function wrapNonMarkdown(
+	r: PodResource,
+	body: string,
+	canWrite: boolean | undefined,
+): string {
 	return [
 		'---',
 		`solid-url: ${r.url}`,
 		`solid-content-type: ${r.contentType || 'unknown'}`,
+		...(canWrite === false ? ['solid-readonly: true'] : []),
 		'---',
 		'',
 		'```' + fence(r.contentType),
@@ -527,7 +539,10 @@ async function readRemote(
 	if (!res.ok) return null;
 	if (kind === 'raw') return res.arrayBuffer();
 	const body = await res.text();
-	return kind === 'note' ? body : wrapNonMarkdown(r, body);
+	// This resource's own WAC-Allow, not the container's: sharing one resource out
+	// of a container you may not write is ordinary Solid, so the answer that
+	// belongs in the note is the one that came back with the note's own bytes.
+	return kind === 'note' ? body : wrapNonMarkdown(r, body, canWriteFrom(res.headers));
 }
 
 async function pull(

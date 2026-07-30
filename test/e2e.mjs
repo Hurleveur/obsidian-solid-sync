@@ -63,9 +63,11 @@ console.log('1. pull:', await runSync(plugin));
 assert.equal(read('Pod/e2e-pull.md'), '# from pod\n');
 ok('markdown pulled verbatim');
 const wrapped = read('Pod/e2e-data.ttl.md');
-assert.doesNotMatch(wrapped, /solid-readonly/);
 assert.match(wrapped, /```turtle\n<#a> <#b> "c"\.\n```/);
-ok('turtle pulled as a fenced note, with no permission claim baked in');
+// Our own pod, so no read-only claim — the property tracks permission, and
+// section 12 checks the same code marks a pod we cannot write.
+if (ID) assert.doesNotMatch(wrapped, /solid-readonly/);
+ok('turtle pulled as a fenced note, marked read-only only when it is');
 
 // 1b. extensionless markdown (the pod's own README is stored this way) -------
 // It must land on a .md path, or the vault cannot see it and the next sync
@@ -305,6 +307,25 @@ if (POD_2) {
 	assert.equal(two.settings.pods[0].access, 'read');
 	assert.equal(two.settings.pods[1].access, 'write');
 	ok('each pod is mirrored into its own folder, with access discovered');
+
+	// `solid-readonly` states what this pod answered about this resource. Whether
+	// the pod has anything fenced to check is up to whoever set POD_URL_2 — the
+	// labelling itself is covered without a network in test/access.mjs.
+	const sharedWrapped = shared.filter((f) =>
+		fs.readFileSync(path.join(root2, f.path), 'utf8').includes('solid-content-type:'),
+	);
+	for (const f of sharedWrapped) {
+		assert.match(
+			fs.readFileSync(path.join(root2, f.path), 'utf8'),
+			/solid-readonly: true/,
+			`${f.path} is not ours to write, and says so`,
+		);
+	}
+	console.log(
+		sharedWrapped.length
+			? `  ok  ${sharedWrapped.length} fenced note(s) from a pod we cannot write are marked read-only`
+			: '   (no fenced resource on POD_URL_2 — read-only labelling checked in access.mjs)',
+	);
 
 	fs.appendFileSync(path.join(root2, shared[0].path), '\nnot mine to change\n');
 	fs.writeFileSync(path.join(root2, 'Pod/e2e-two.md'), '# written past a 403\n');

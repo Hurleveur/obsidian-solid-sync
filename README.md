@@ -83,6 +83,12 @@ There is no polling. Pod-side changes arrive on the next sync, so leave **Sync a
   source fenced and `solid-url` in the properties. Editing the fenced text pushes it
   back as that resource's own content type — same as an ordinary note, gated on
   permission, never on what it is.
+- `solid-readonly: true` appears in those properties when **that resource's** own
+  `WAC-Allow` said you may not write it — a friend's shared note, say. It is a
+  reading of the pod's answer, not a rule the plugin enforces: your own resources are
+  never labelled, a server that sends no header is never labelled either, and an edit
+  is attempted regardless. Only the fenced body is compared between the two sides, so
+  the label changing as access changes never looks like the resource changing.
 - Resources without an extension become `<name>.md` notes — a pod's own `README` is
   stored exactly this way.
 

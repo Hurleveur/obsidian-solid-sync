@@ -11,6 +11,7 @@ import {
 	matchesLocal,
 	migrateSettings,
 	unwrapNonMarkdown,
+	wrapNonMarkdown,
 } from './sync.bundle.mjs';
 
 // --- WAC-Allow ------------------------------------------------------------
@@ -163,5 +164,34 @@ assert.equal(unwrapNonMarkdown(wrap('solid-content-type: text/plain\n', ''))?.bo
 // Not a wrapped note at all, or a fence the user broke: refuse, never guess.
 assert.equal(unwrapNonMarkdown('# an ordinary note\n'), null);
 assert.equal(unwrapNonMarkdown('---\nsolid-content-type: text/plain\n---\n\nno fence\n'), null);
+
+// --- solid-readonly states a permission, never a kind ---------------------
+// The whole point of the property: it answers "may I edit this", so it tracks
+// what the pod said about this resource and nothing about it being RDF.
+const res = { url: 'https://pod.example.eu/x/card', contentType: 'text/turtle' };
+
+assert.doesNotMatch(
+	wrapNonMarkdown(res, '<#a> <#b> "c".', true),
+	/solid-readonly/,
+	'our own resource is never labelled read-only',
+);
+assert.match(
+	wrapNonMarkdown(res, '<#a> <#b> "c".', false),
+	/^solid-readonly: true$/m,
+	"a resource the pod refuses us says so",
+);
+assert.doesNotMatch(
+	wrapNonMarkdown(res, '<#a> <#b> "c".', undefined),
+	/solid-readonly/,
+	'an ACP server sent no WAC-Allow — it refused nothing, so claim nothing',
+);
+
+// Whatever the label, the body round-trips and the type is preserved.
+for (const canWrite of [true, false, undefined]) {
+	assert.deepEqual(unwrapNonMarkdown(wrapNonMarkdown(res, 'x\ny', canWrite)), {
+		contentType: 'text/turtle',
+		body: 'x\ny',
+	});
+}
 
 console.log('access rules: all checks passed');
