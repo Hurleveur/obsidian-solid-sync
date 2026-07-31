@@ -296,6 +296,71 @@ if (POD_2) {
 	console.log('\n12. POD_URL_2 unset — read-only pod test skipped');
 }
 
+// 13. a pod filed inside another pod's folder ------------------------------
+// The regression test for the write leak: without the boundary, a note in the
+// inner pod's folder has no match under this pod's URL, so it is read as a new
+// local note and pushed into this pod — someone else's note, copied into your
+// storage and recorded as yours.
+{
+	const root3 = fs.mkdtempSync(path.join(os.tmpdir(), 'solid-nested-'));
+	const vault3 = new Vault(root3);
+	const write3 = (p, s) => {
+		fs.mkdirSync(path.dirname(path.join(root3, p)), { recursive: true });
+		fs.writeFileSync(path.join(root3, p), s);
+	};
+	const nested = {
+		app: { vault: vault3, fileManager: { trashFile: (f) => vault3.trash(f) } },
+		settings: {
+			...plugin.settings,
+			pushDeletions: true,
+			pods: [
+				{ url: POD, folder: 'Pod' },
+				// Any pod at all: the folder is what claims the notes, so an
+				// unreachable URL exercises the same boundary.
+				{ url: POD_2 ?? 'https://unreachable.invalid/', folder: 'Pod/nicolas' },
+			],
+		},
+		state: {},
+		saveState: async () => {},
+		saveSettings: async () => {},
+	};
+
+	// This pod has a container of its own exactly where the other pod's folder
+	// sits. The innermost folder owns it, so it must not be pulled either.
+	await put('nicolas/mine.md', '# my own nicolas container\n');
+	console.log('13. nested folders:', await runSync(nested));
+	assert.ok(
+		!fs.existsSync(path.join(root3, 'Pod/nicolas/mine.md')),
+		'a resource mapping into the inner pod folder is left to that pod',
+	);
+
+	write3('Pod/nicolas/not-mine.md', '# his note, not mine\n');
+	write3('Pod/e2e-mine.md', '# mine\n');
+	const boundary = await runSync(nested);
+	console.log('   boundary:', boundary);
+	assert.equal(
+		(await fetcher(new URL('nicolas/not-mine.md', POD).href)).status,
+		404,
+		'a note in the inner pod folder is never pushed into this pod',
+	);
+	assert.equal(
+		await (await fetcher(new URL('e2e-mine.md', POD).href)).text(),
+		'# mine\n',
+		'this pod still syncs its own notes — the boundary is not a blanket skip',
+	);
+	assert.ok(
+		fs.existsSync(path.join(root3, 'Pod/nicolas/not-mine.md')),
+		'and the note is left in the vault, not trashed',
+	);
+	assert.deepEqual(vault3.trashed, []);
+	ok('a pod filed inside another one keeps its notes, both directions');
+
+	await del('e2e-mine.md');
+	await del('nicolas/mine.md');
+	await del('nicolas/');
+	fs.rmSync(root3, { recursive: true, force: true });
+}
+
 // cleanup ------------------------------------------------------------------
 await del('e2e-noext');
 await del('e2e-keep.md');

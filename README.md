@@ -19,8 +19,10 @@ content negotiation, so no `@inrupt/*` client and no RDF parser are bundled.
    enter your pod account email and password. This mints a client-credentials token
    through the pod's account API; the password is used once and never stored.
 3. Run **Sync now** from the command palette, or select the ribbon icon.
-4. Add more pods the same way. Give each its own folder — overlapping folders are
+4. Add more pods the same way. Give each its own folder — the same folder twice is
    refused, because a note in two pods' folders would be pushed to the wrong one.
+   Filing one pod's folder *inside* another's is fine — see
+   [A pod inside a pod's folder](#a-pod-inside-a-pods-folder).
 
 ## Many pods, one identity
 
@@ -59,6 +61,26 @@ version is saved beside your note, and neither is overwritten.
 
 A pod that refuses a write, or one that is unreachable, is reported and stepped over.
 It never stops the other pods in the list from syncing.
+
+### A pod inside a pod's folder
+
+A pod's folder may sit inside another pod's folder, so the vault can be arranged the
+way you think about it — your own pod at `Solid/`, someone else's filed under it at
+`Solid/nicolas/`, whatever their URLs are.
+
+**The innermost folder owns the notes in it.** The pod above stops at that boundary:
+it does not pull there, does not push what it finds there, does not delete there, and
+does not count those notes as missing. Nothing crosses between two pods because they
+happen to be filed one inside the other — a pod only ever holds what is really its
+own, which is the point of having separate pods at all.
+
+This applies to what the outer pod already has, too. If your own pod holds a
+container that lands on the inner pod's folder, those resources are reported as
+skipped and left to the pod that owns that folder, rather than mixed in underneath
+it.
+
+Only giving two pods the **same** folder is refused: with no innermost pod, neither
+could own a note in it.
 
 ## When it syncs
 

@@ -159,7 +159,7 @@ export class SolidSyncSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName('Pods')
 			.setDesc(
-				'Each container is mirrored into its own vault folder. Add any pod you can read — your own, a shared one, or a public one.',
+				"Each container is mirrored into its own vault folder. Add any pod you can read — your own, a shared one, or a public one. A folder may sit inside another pod's folder: the innermost one owns its notes, and no other pod touches them.",
 			)
 			.setHeading()
 			.addButton((btn) =>
@@ -206,10 +206,10 @@ export class SolidSyncSettingTab extends PluginSettingTab {
 							const folder = v.trim();
 							const clash = folderClash(pods, i, folder);
 							if (clash) {
-								// Two pods sharing a folder would each try to push
+								// Two pods sharing one folder would each try to push
 								// the other's notes, so refuse rather than save.
 								new Notice(
-									`"${folder}" overlaps the folder "${clash}" of another pod. Give each pod its own folder.`,
+									`"${clash}" is already another pod's folder. Give each pod its own — a folder inside another pod's folder is fine.`,
 								);
 								return;
 							}

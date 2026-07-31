@@ -8,8 +8,10 @@ import {
 	canWriteFrom,
 	deletedLocally,
 	folderClash,
+	listContainer,
 	matchesLocal,
 	migrateSettings,
+	nestedFolders,
 } from './sync.bundle.mjs';
 
 // --- WAC-Allow ------------------------------------------------------------
@@ -33,7 +35,7 @@ assert.equal(wac('USER = "read write"'), true);
 assert.equal(wac(''), undefined);
 assert.equal(wac('public="read"'), false, 'header present but no user group');
 
-// --- folder overlap -------------------------------------------------------
+// --- folder collision -----------------------------------------------------
 const pods = [
 	{ url: 'https://a.example/', folder: 'Pod' },
 	{ url: 'https://b.example/', folder: 'Work/Shared' },
@@ -41,13 +43,16 @@ const pods = [
 
 // Free folders.
 assert.equal(folderClash(pods, 2, 'Other'), null);
-assert.equal(folderClash(pods, 2, 'Podx'), null, 'a shared prefix is not an overlap');
+assert.equal(folderClash(pods, 2, 'Podx'), null, 'a shared prefix is not a collision');
 assert.equal(folderClash(pods, 2, 'Work/Other'), null, 'siblings are fine');
 
-// Taken, in every direction.
+// Only the very same folder is refused — with two pods on one folder there is no
+// innermost, so neither could own a note in it.
 assert.equal(folderClash(pods, 2, 'Pod'), 'Pod', 'exactly the same folder');
-assert.equal(folderClash(pods, 2, 'Pod/friend'), 'Pod', 'nested inside another');
-assert.equal(folderClash(pods, 2, 'Work'), 'Work/Shared', 'a parent of another');
+
+// Nesting is how one pod is filed inside another, in both directions.
+assert.equal(folderClash(pods, 2, 'Pod/friend'), null, 'inside another pod');
+assert.equal(folderClash(pods, 2, 'Work'), null, 'around another pod');
 
 // A pod never clashes with itself, or it could not be edited.
 assert.equal(folderClash(pods, 0, 'Pod'), null);
@@ -58,6 +63,95 @@ assert.equal(
 	folderClash([{ url: 'https://a.example/', folder: '' }], 1, 'Pod'),
 	null,
 );
+
+// --- who owns a path when folders nest ------------------------------------
+// Every prefix ends in a slash, so the caller can use it with startsWith.
+const nestedPods = [
+	{ url: 'https://a.example/', folder: 'Pod' },
+	{ url: 'https://b.example/', folder: 'Pod/nicolas' },
+	{ url: 'https://c.example/', folder: 'Pod/deep/nested' },
+	{ url: 'https://d.example/', folder: 'Podx' },
+	{ url: 'https://e.example/', folder: 'Other' },
+];
+
+assert.deepEqual(
+	nestedFolders(nestedPods, 'Pod'),
+	['Pod/nicolas/', 'Pod/deep/nested/'],
+	'a pod gives up every folder filed inside its own, at any depth',
+);
+assert.deepEqual(
+	nestedFolders(nestedPods, 'Podx'),
+	[],
+	'a sibling sharing a prefix takes nothing',
+);
+assert.deepEqual(
+	nestedFolders(nestedPods, 'Pod/nicolas'),
+	[],
+	'the innermost pod gives up nothing to the one around it',
+);
+assert.deepEqual(nestedFolders(nestedPods, 'Other'), []);
+
+// The claim is the folder, not the pod: a row still missing its URL must not have
+// its notes swept up and pushed to the pod above it.
+assert.deepEqual(nestedFolders([{ url: '', folder: 'Pod/nicolas' }], 'Pod'), [
+	'Pod/nicolas/',
+]);
+assert.deepEqual(
+	nestedFolders([{ url: 'https://b.example/', folder: '' }], 'Pod'),
+	[],
+	'a row with no folder claims nothing',
+);
+
+// A pod is never inside itself, or it would own none of its own notes.
+assert.deepEqual(nestedFolders([{ url: 'https://a.example/', folder: 'Pod' }], 'Pod'), []);
+
+// Nothing is configured yet, or the pod is the whole vault.
+assert.deepEqual(nestedFolders(nestedPods, ''), []);
+assert.deepEqual(nestedFolders(nestedPods, '/'), []);
+
+// --- reading a media type off a container listing --------------------------
+// Servers say it in two different ways and an empty content type is not
+// harmless: it classifies RDF as an opaque attachment, so it is pulled as bytes
+// instead of a read-only note and a local edit gets pushed back.
+const listing = async (nodes) =>
+	listContainer(
+		async () =>
+			new Response(JSON.stringify(nodes), {
+				headers: { 'content-type': 'application/ld+json' },
+			}),
+		'https://a.example/pod/',
+	);
+const contains = {
+	'@id': 'https://a.example/pod/',
+	'http://www.w3.org/ns/ldp#contains': [{ '@id': 'https://a.example/pod/note' }],
+};
+
+// Community Solid Server: a plain ma-ont#format value.
+const ma = await listing([
+	contains,
+	{
+		'@id': 'https://a.example/pod/note',
+		'http://www.w3.org/ns/ma-ont#format': [{ '@value': 'text/turtle' }],
+	},
+]);
+assert.equal(ma.children[0].contentType, 'text/turtle');
+
+// Servers that type the resource with an IANA class instead.
+const iana = await listing([
+	contains,
+	{
+		'@id': 'https://a.example/pod/note',
+		'@type': [
+			'http://www.w3.org/ns/ldp#Resource',
+			'http://www.w3.org/ns/iana/media-types/text/turtle#Resource',
+		],
+	},
+]);
+assert.equal(iana.children[0].contentType, 'text/turtle');
+
+// Said neither way: unknown, and unknown must stay empty rather than guessed.
+const silent = await listing([contains, { '@id': 'https://a.example/pod/note' }]);
+assert.equal(silent.children[0].contentType, '');
 
 // --- migrating off the single-pod settings --------------------------------
 // An existing user must come back with the same pod, still logged in, or their

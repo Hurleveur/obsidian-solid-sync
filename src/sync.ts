@@ -111,10 +111,10 @@ export function isSyncTrigger(
 }
 
 /**
- * The folder another pod already claims, if `folder` would overlap it — `null` when
- * it is free. Sync scans a folder with `startsWith`, so two pods sharing one, or one
- * nested in another, would each treat the other's notes as its own and push them to
- * the wrong pod. Sibling names that merely share a prefix are fine.
+ * The folder another pod already claims, if `folder` would collide with it — `null`
+ * when it is free. Only the very same folder collides: nesting is how one pod is
+ * filed inside another, and the innermost folder owns a path. Two pods on one folder
+ * have no innermost, so neither could own anything there.
  */
 export function folderClash(
 	pods: PodConfig[],
@@ -126,11 +126,25 @@ export function folderClash(
 	for (const [i, pod] of pods.entries()) {
 		if (i === index || !pod.folder) continue;
 		const other = normalizePath(pod.folder);
-		if (f === other || f.startsWith(`${other}/`) || other.startsWith(`${f}/`)) {
-			return other;
-		}
+		if (f === other) return other;
 	}
 	return null;
+}
+
+/**
+ * Vault folder prefixes inside `folder` that another pod already owns. A pod filed
+ * inside another one keeps its own notes: sync scans a folder with `startsWith`, so
+ * without this the outer pod would treat them as its own and push them into its own
+ * container. A folder is owned as soon as it is set, even on a row with no URL yet —
+ * a half-filled row must not leave its notes to the pod above it.
+ */
+export function nestedFolders(pods: PodConfig[], folder: string): string[] {
+	const f = normalizePath(folder);
+	if (!f || f === '/') return [];
+	return pods
+		.map((p) => normalizePath(p.folder ?? ''))
+		.filter((other) => other.startsWith(`${f}/`))
+		.map((other) => `${other}/`);
 }
 
 /** Conflict copies live in the synced folder but are local scratch — never pushed. */
@@ -273,6 +287,11 @@ async function syncPod(
 	const root = pod.url.endsWith('/') ? pod.url : `${pod.url}/`;
 	const base = normalizePath(pod.folder);
 
+	// Paths a pod filed inside this one owns. Left out of both sides entirely: not
+	// pulled, not pushed, not deleted, and not read as missing.
+	const nested = nestedFolders(plugin.settings.pods, base);
+	const claimed = (path: string) => nested.some((n) => path.startsWith(n));
+
 	const vault = plugin.app.vault;
 	const state: SyncState = plugin.state;
 
@@ -309,6 +328,13 @@ async function syncPod(
 		// invisible note reads as "deleted locally" on the next sync. Attachments
 		// keep their own name, which is what the embed link in a note points at.
 		const path = `${base}/${kind === 'raw' || rel.endsWith('.md') ? rel : `${rel}.md`}`;
+		// This pod has a container of its own where another pod's folder sits. The
+		// innermost folder owns it, and a resource dropped without a word would be
+		// indistinguishable from one the pod never had.
+		if (claimed(path)) {
+			report.skipped.push(`${r.url} (${path} belongs to another pod's folder)`);
+			continue;
+		}
 		if (tooBig(path, r.size, 'on pod')) continue;
 		const clash = remote.get(path);
 		if (clash) {
@@ -322,6 +348,7 @@ async function syncPod(
 	for (const file of vault.getFiles()) {
 		if (
 			file.path.startsWith(`${base}/`) &&
+			!claimed(file.path) &&
 			!CONFLICT_COPY.test(file.path) &&
 			!tooBig(file.path, file.stat.size, 'in the vault')
 		) {
@@ -333,7 +360,9 @@ async function syncPod(
 	// mirror that onto the pod — one wrong sync should not be able to empty it.
 	// Counted within this pod's folder only: measured against every pod's state, a
 	// wiped folder would stop tripping the guard as soon as other pods were added.
-	const known = Object.keys(state).filter((p) => p.startsWith(`${base}/`));
+	const known = Object.keys(state).filter(
+		(p) => p.startsWith(`${base}/`) && !claimed(p),
+	);
 	const missingLocally = known.filter(
 		(p) => remote.has(p) && !local.has(p) && !oversize.has(p),
 	);

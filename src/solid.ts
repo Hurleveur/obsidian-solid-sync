@@ -192,6 +192,7 @@ export async function createClientCredentials(
 }
 
 const IANA = 'http://www.w3.org/ns/iana/media-types/';
+const MA_FORMAT = 'http://www.w3.org/ns/ma-ont#format';
 const LDP_CONTAINS = 'http://www.w3.org/ns/ldp#contains';
 const DC_MODIFIED = 'http://purl.org/dc/terms/modified';
 const POSIX_SIZE = 'http://www.w3.org/ns/posix/stat#size';
@@ -211,9 +212,22 @@ function collect(graph: JsonLdNode[], id: string, predicate: string): unknown[] 
 		});
 }
 
+/**
+ * A resource's media type, whichever way the server says it. Community Solid
+ * Server states it as a plain `ma-ont#format` value; others type the resource
+ * with an IANA class. Reading only one leaves `contentType` empty, and an empty
+ * one makes every RDF resource look like an opaque attachment.
+ */
+function mediaTypeOf(graph: JsonLdNode[], url: string): string {
+	const format = collect(graph, url, MA_FORMAT)[0] as { '@value'?: string } | undefined;
+	if (format?.['@value']) return format['@value'];
+	const iana = collect(graph, url, '@type')
+		.map(String)
+		.find((t) => t.startsWith(IANA));
+	return iana ? iana.slice(IANA.length).replace(/#Resource$/, '') : '';
+}
+
 function describe(graph: JsonLdNode[], url: string): PodResource {
-	const types = collect(graph, url, '@type').map(String);
-	const mediaType = types.find((t) => t.startsWith(IANA));
 	const modified = collect(graph, url, DC_MODIFIED)[0] as
 		| { '@value'?: string }
 		| undefined;
@@ -227,9 +241,7 @@ function describe(graph: JsonLdNode[], url: string): PodResource {
 		// Absent on servers that do not publish it — 0 then means "unknown", and
 		// an unknown size must never look oversized.
 		size: Number(size?.['@value'] ?? 0),
-		contentType: mediaType
-			? mediaType.slice(IANA.length).replace(/#Resource$/, '')
-			: '',
+		contentType: mediaTypeOf(graph, url),
 	};
 }
 
