@@ -9,9 +9,13 @@ import {
 	deletedLocally,
 	folderClash,
 	listContainer,
+	markReadOnly,
 	matchesLocal,
 	migrateSettings,
 	nestedFolders,
+	stripReadOnly,
+	unwrapNonMarkdown,
+	wrapNonMarkdown,
 } from './sync.bundle.mjs';
 
 // --- WAC-Allow ------------------------------------------------------------
@@ -227,5 +231,82 @@ assert.equal(await matchesLocal(vaultOf('', bin(1, 2, 3)), {}, bin(1, 2, 3)), tr
 assert.equal(await matchesLocal(vaultOf('', bin(1, 2, 3)), {}, bin(1, 2, 4)), false);
 assert.equal(await matchesLocal(vaultOf('', bin(1, 2)), {}, bin(1, 2, 3)), false);
 assert.equal(await matchesLocal(vaultOf('', bin()), {}, bin()), true, 'both empty');
+
+// --- the fenced wrapper is ours, and only the body is the pod's ------------
+const wrap = (props, body) =>
+	`---\nsolid-url: https://pod.example.eu/x/README\n${props}---\n\n\`\`\`plain\n${body}\n\`\`\`\n`;
+
+assert.deepEqual(unwrapNonMarkdown(wrap('solid-content-type: text/turtle\n', '<#a> <#b> "c".')), {
+	contentType: 'text/turtle',
+	body: '<#a> <#b> "c".',
+});
+
+// Notes pulled by an older version carry `solid-readonly: true`. Dropping that
+// line from the wrapper must not read as the resource itself having changed —
+// which is what bred a conflict copy against the note's own former format.
+const legacy = wrap('solid-content-type: text/plain\nsolid-readonly: true\n', 'hello');
+assert.notEqual(legacy, wrap('solid-content-type: text/plain\n', 'hello'));
+assert.equal(unwrapNonMarkdown(legacy)?.body, 'hello');
+assert.equal(
+	unwrapNonMarkdown(legacy)?.body,
+	unwrapNonMarkdown(wrap('solid-content-type: text/plain\n', 'hello'))?.body,
+	'same body, different wrapper — never a conflict',
+);
+
+// A multi-line body keeps every line, and an empty one round-trips.
+assert.equal(unwrapNonMarkdown(wrap('solid-content-type: text/plain\n', 'a\n\nb'))?.body, 'a\n\nb');
+assert.equal(unwrapNonMarkdown(wrap('solid-content-type: text/plain\n', ''))?.body, '');
+
+// Not a wrapped note at all, or a fence the user broke: refuse, never guess.
+assert.equal(unwrapNonMarkdown('# an ordinary note\n'), null);
+assert.equal(unwrapNonMarkdown('---\nsolid-content-type: text/plain\n---\n\nno fence\n'), null);
+
+// --- solid-readonly states a permission, never a kind ---------------------
+// The whole point of the property: it answers "may I edit this", so it tracks
+// what the pod said about this resource and nothing about it being RDF.
+const res = { url: 'https://pod.example.eu/x/card', contentType: 'text/turtle' };
+
+assert.doesNotMatch(
+	wrapNonMarkdown(res, '<#a> <#b> "c".', true),
+	/solid-readonly/,
+	'our own resource is never labelled read-only',
+);
+assert.match(
+	wrapNonMarkdown(res, '<#a> <#b> "c".', false),
+	/^solid-readonly: true$/m,
+	"a resource the pod refuses us says so",
+);
+assert.doesNotMatch(
+	wrapNonMarkdown(res, '<#a> <#b> "c".', undefined),
+	/solid-readonly/,
+	'an ACP server sent no WAC-Allow — it refused nothing, so claim nothing',
+);
+
+// A markdown note carries the same answer, as one property and never a fence —
+// fencing it would break the links, embeds and graph the notes exist for.
+assert.equal(markReadOnly('# hello\n'), '---\nsolid-readonly: true\n---\n# hello\n');
+assert.equal(stripReadOnly(markReadOnly('# hello\n')), '# hello\n');
+
+// A note with properties of its own keeps one block, not two — a second one is
+// not frontmatter, it is body text with dashes in it.
+const own = '---\ntitle: mine\ntags: [a]\n---\n# hello\n';
+assert.equal(markReadOnly(own), '---\nsolid-readonly: true\ntitle: mine\ntags: [a]\n---\n# hello\n');
+assert.equal(stripReadOnly(markReadOnly(own)), own, 'the note gets its own properties back');
+
+// Never marked, or marked and pushed already: leave it exactly as it is.
+assert.equal(stripReadOnly('# hello\n'), '# hello\n');
+assert.equal(stripReadOnly(own), own);
+assert.equal(stripReadOnly(''), '');
+// Only our own property is removed, never a `solid-readonly` further down.
+const notOurs = '---\ntitle: mine\nsolid-readonly: true\n---\nx\n';
+assert.equal(stripReadOnly(notOurs), notOurs);
+
+// Whatever the label, the body round-trips and the type is preserved.
+for (const canWrite of [true, false, undefined]) {
+	assert.deepEqual(unwrapNonMarkdown(wrapNonMarkdown(res, 'x\ny', canWrite)), {
+		contentType: 'text/turtle',
+		body: 'x\ny',
+	});
+}
 
 console.log('access rules: all checks passed');

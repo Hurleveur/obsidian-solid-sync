@@ -11,6 +11,44 @@ Built on the official `obsidian-sample-plugin` scaffold. No runtime dependencies
 DPoP authentication uses WebCrypto, and RDF is read as JSON-LD through the pod's own
 content negotiation, so no `@inrupt/*` client and no RDF parser are bundled.
 
+## Install
+
+Not in the community plugin store yet, so the easiest route is BRAT, which installs
+from this repo's releases and keeps the plugin updated afterwards.
+
+### With BRAT
+
+[BRAT](https://github.com/TfTHacker/obsidian42-brat) installs plugins straight from
+GitHub releases. It is in the store itself, so it installs normally.
+
+1. **Settings → Community plugins → Browse**, search **BRAT**, install and enable it.
+2. Command palette → **BRAT: Plugins: Add a beta plugin for testing (with or without
+   version)**.
+3. Paste `Hurleveur/obsidian-solid-sync` — the full `https://github.com/…` URL works
+   too. Leave the version on **Latest version**, keep **Enable after installing the
+   plugin** checked, and select **Add plugin**.
+4. It arrives enabled under **Community plugins**. Continue with [Setup](#setup).
+
+"Beta" is only BRAT's word for anything outside the store. It installs whatever the
+release holds, and these are ordinary tagged releases, not prereleases.
+
+Updates are not automatic unless you turn on **Auto-update plugins at startup** in
+BRAT's settings. Otherwise run **BRAT: Plugins: Check for updates to all beta plugins
+and UPDATE** when you want them. Choosing a specific tag in step 3 instead of
+**Latest version** pins it, and auto-update deliberately skips pinned plugins.
+
+Once this is in the store, **BRAT: Plugins: Update a graduated plugin to stable
+release and remove from BRAT** hands it over without reinstalling anything.
+
+### By hand
+
+Download `main.js` and `manifest.json` from the
+[latest release](https://github.com/Hurleveur/obsidian-solid-sync/releases/latest) —
+the two files individually, not the source zip — or build them with `npm run build`.
+Put both in `<vault>/.obsidian/plugins/solid-sync/`, then refresh the list under
+**Settings → Community plugins** and enable **Solid Pod Sync**. There is no
+`styles.css`: the plugin adds no CSS.
+
 ## Setup
 
 1. **Settings → Solid Pod Sync → Add pod**, then set the container URL
@@ -95,15 +133,29 @@ There is no polling. Pod-side changes arrive on the next sync, so leave **Sync a
 
 ## How it works
 
-- `.md` resources sync both ways, byte for byte, with no injected frontmatter.
+- `.md` resources sync both ways, byte for byte, with no injected frontmatter — except
+  the read-only marker below, on notes the pod refuses you.
 - Attachments — images, PDFs, HTML, audio, video, anything else with an extension —
   sync both ways as bytes, keeping their own filename, so `![[picture.png]]` in a note
   resolves on every machine. Anything over the size limit — 10 MB by default,
   settable, 0 to disable — is reported as skipped and left untouched on both sides,
   never mistaken for a deletion.
-- Other text resources (turtle, JSON-LD, plain text) are pulled read-only into a note
-  with the source fenced and `solid-url` in the properties. Local edits to those are
-  never pushed.
+- Other text resources (turtle, JSON-LD, plain text) are pulled into a note with the
+  source fenced and `solid-url` in the properties. Editing the fenced text pushes it
+  back as that resource's own content type — same as an ordinary note, gated on
+  permission, never on what it is.
+- `solid-readonly: true` appears in a note's properties when **that resource's** own
+  `WAC-Allow` said you may not write it — a friend's shared note, say. It is a reading
+  of the pod's answer, not a rule the plugin enforces: your own resources are never
+  labelled, a server that sends no header is never labelled either, and an edit is
+  attempted regardless.
+
+  This is the **one** exception to markdown being stored byte for byte, and it applies
+  only where the pod refused. One property, never a fence, so links, embeds, graph and
+  Bases keep working. It goes into the note's own properties if it has them, comes off
+  again the moment access is granted, and is taken back off before any push. Only what
+  the pod itself holds is compared between the two sides, so the label appearing or
+  disappearing never reads as the resource changing.
 - Resources without an extension become `<name>.md` notes — a pod's own `README` is
   stored exactly this way.
 
@@ -116,7 +168,7 @@ no clock comparison between machines is needed. Assumes one editor at a time.
 | --- | --- |
 | Changed on pod only | Pulled |
 | Changed locally only | Pushed |
-| Changed on both, same bytes | Nothing. A re-save with no edit, or a pod re-serialising a resource, moves a timestamp without moving a byte — content is compared before anything is written |
+| Changed on both, same bytes | Nothing. A re-save with no edit, or a pod re-serialising a resource, moves a timestamp without moving a byte — content is compared before anything is written. For a fenced resource only the fenced body counts, so a change to how the wrapper is written is never read as a change to the resource |
 | Changed on both, different bytes | Nothing is overwritten. The pod version is saved as `note (pod conflict …).md` beside yours — same for attachments, keeping their extension; edit your copy to resolve |
 | Deleted on pod | Local note moved to trash, recoverable |
 | Deleted locally | Pod copy kept, unless **Delete on pod** is enabled. It is not pulled again — see **Restore deleted notes** below |
@@ -141,11 +193,10 @@ A plugin is two files in `<vault>/.obsidian/plugins/solid-sync/`: `main.js` and
 
 - **Send it to one person**: `npm run build`, then share those files. They drop the
   folder into their vault and enable it under **Settings → Community plugins**.
-- **Install from GitHub**: push this repo, create a release whose tag exactly matches
-  the `version` in `manifest.json` (no leading `v`), and attach `main.js` and
-  `manifest.json` as individual assets. Others install it with
-  [BRAT](https://github.com/TfTHacker/obsidian42-brat) by entering the repo name — no
-  review process, and BRAT keeps it updated.
+- **Cut a release**: `npm version <x.y.z>`, then tag it with that exact version — no
+  leading `v`, matching `manifest.json` — and attach `main.js` and `manifest.json` as
+  individual assets, not a zip. That is all [BRAT](#with-brat) reads; a release
+  missing `main.js` is refused with the release named in the error. No review process.
 - **Inside a shared vault repo**: commit the code files — never `data.json`,
   which holds the token — and add the plugin
   id to `community-plugins.json` so it arrives enabled. Vaults usually gitignore
@@ -160,8 +211,6 @@ A plugin is two files in `<vault>/.obsidian/plugins/solid-sync/`: `main.js` and
 end to end. It writes to a pod and deletes notes, so it should not go out to
 strangers on a machine review alone. Worth settling before submitting:
 
-- The `fetch` warnings under [Notes](#notes) — reviewers ask why `requestUrl`
-  is not used, so the answer belongs in the PR.
 - The **Log in** flow is Community Solid Server specific. Other servers need
   credentials pasted by hand, which the settings UI should say plainly.
 - Sync behaviour under a second editor. The single-editor assumption holds for
@@ -252,8 +301,5 @@ you by default — which is exactly the case worth testing.
 
 ## Notes
 
-- Uses `fetch` rather than Obsidian's `requestUrl`, which the linter warns about.
-  Pods send `Access-Control-Allow-Origin: app://obsidian.md`, so CORS is not an
-  obstacle, and DPoP proofs need per-request control that `requestUrl` does not give.
 - Tested against Community Solid Server. The account API used for **Log in** is
   CSS-specific; other servers need their credentials pasted in by hand.

@@ -16,6 +16,7 @@ import type SolidSyncPlugin from './main';
 import type { PodConfig } from './settings';
 import {
 	anonymousFetch,
+	canWriteFrom,
 	createFetcher,
 	walk,
 	type Fetcher,
@@ -26,7 +27,6 @@ export interface FileState {
 	url: string;
 	pod: string;
 	local: number;
-	readOnly: boolean;
 }
 
 export type SyncState = Record<string, FileState>;
@@ -43,7 +43,7 @@ interface Report {
 /**
  * How a pod resource is represented in the vault.
  *  note    — markdown, stored verbatim
- *  wrapped — RDF and other pod text, fenced inside a read-only note
+ *  wrapped — RDF and other pod text, fenced inside a note
  *  raw     — everything else (images, PDFs, HTML, audio), copied byte for byte
  */
 type Kind = 'note' | 'wrapped' | 'raw';
@@ -164,13 +164,23 @@ const fence = (contentType: string) =>
 	contentType.split('/')[1]?.replace(/^.*\+/, '') ??
 	'text';
 
-/** Read-only resources become notes with their source fenced and the URL in properties. */
-function wrapNonMarkdown(r: PodResource, body: string): string {
+/**
+ * Non-markdown pod text becomes a note with its source fenced and the URL in
+ * properties. `canWrite` is what the pod said about this resource, so
+ * `solid-readonly` states a permission and never a kind — absent when the pod
+ * grants write, and absent again when it sent no header at all, since a server
+ * that has refused nothing must not be quoted as refusing.
+ */
+export function wrapNonMarkdown(
+	r: PodResource,
+	body: string,
+	canWrite: boolean | undefined,
+): string {
 	return [
 		'---',
 		`solid-url: ${r.url}`,
 		`solid-content-type: ${r.contentType || 'unknown'}`,
-		'solid-readonly: true',
+		...(canWrite === false ? ['solid-readonly: true'] : []),
 		'---',
 		'',
 		'```' + fence(r.contentType),
@@ -178,6 +188,58 @@ function wrapNonMarkdown(r: PodResource, body: string): string {
 		'```',
 		'',
 	].join('\n');
+}
+
+/** The one property added to a note, and only to one the pod refuses us. */
+const READONLY = '---\nsolid-readonly: true\n';
+
+/**
+ * Says in the note that this resource is not ours to change, so the vault answers
+ * that before an edit rather than after one is refused. A markdown note is stored
+ * byte for byte, so this is the single exception to that — and it applies only
+ * where the pod actually refused, never to a note you can write.
+ */
+export function markReadOnly(note: string): string {
+	// Into the note's own properties when it has them: a second frontmatter block
+	// is not frontmatter, it is body text with dashes in it.
+	return note.startsWith('---\n')
+		? READONLY + note.slice(4)
+		: `${READONLY}---\n${note}`;
+}
+
+/**
+ * What the resource itself holds, with our presentation of it taken back off —
+ * `null` when the note is too mangled to say. This is what the two sides are
+ * compared on, so how we present a resource can change without that ever reading
+ * as the resource changing.
+ */
+function podText(kind: Kind, note: string): string | null {
+	return kind === 'wrapped'
+		? (unwrapNonMarkdown(note)?.body ?? null)
+		: stripReadOnly(note);
+}
+
+/** Reverses `markReadOnly`, and leaves a note that was never marked untouched. */
+export function stripReadOnly(note: string): string {
+	if (!note.startsWith(READONLY)) return note;
+	const rest = note.slice(READONLY.length);
+	// The note had no properties of its own, so the block we opened closes with it.
+	return rest.startsWith('---\n') ? rest.slice(4) : `---\n${rest}`;
+}
+
+const WRAP_PATTERN =
+	/^---\n(?:.*\n)*?solid-content-type: (.+)\n(?:.*\n)*?---\n\n```[^\n]*\n([\s\S]*?)\n```\n?$/;
+
+/**
+ * Reverses `wrapNonMarkdown`, so an edit to the fenced source can be sent back.
+ * Tolerates extra properties, including `solid-readonly: true` from notes pulled
+ * by an older version: the wrapper is ours, and only the fenced body is the pod's.
+ */
+export function unwrapNonMarkdown(
+	note: string,
+): { body: string; contentType: string } | null {
+	const m = WRAP_PATTERN.exec(note);
+	return m ? { contentType: m[1] ?? '', body: m[2] ?? '' } : null;
 }
 
 async function writeFile(
@@ -387,11 +449,24 @@ async function syncPod(
 					report.skipped.push(`${path} (no read access)`);
 					continue;
 				}
+				let local = f.stat.mtime;
 				if (!(await matchesLocal(vault, f, podCopy))) {
-					// Named after the pod revision, so repeated syncs refresh one copy
-					// instead of breeding a new file every run.
-					await writeFile(vault, conflictPath(path, r.modified), podCopy);
-					report.conflicts.push(path);
+					// What we add to present a resource — the fence, the read-only
+					// property — is ours, not the pod's, so a change in it is not a
+					// change to the resource. Compare what the pod actually holds and
+					// refresh our own presentation in place when that is all that moved,
+					// rather than announcing a conflict against ourselves.
+					const mine = podText(entry.kind, await vault.read(f));
+					const theirs =
+						typeof podCopy === 'string' ? podText(entry.kind, podCopy) : null;
+					if (mine !== null && mine === theirs) {
+						local = (await writeFile(vault, path, podCopy)).stat.mtime;
+					} else {
+						// Named after the pod revision, so repeated syncs refresh one copy
+						// instead of breeding a new file every run.
+						await writeFile(vault, conflictPath(path, r.modified), podCopy);
+						report.conflicts.push(path);
+					}
 				}
 				// Mark each side as seen whether or not a copy was written. The note
 				// keeps its local text, the pod keeps its own, and whichever the user
@@ -399,33 +474,38 @@ async function syncPod(
 				state[path] = {
 					url: r.url,
 					pod: r.modified,
-					local: f.stat.mtime,
-					readOnly: entry.kind === 'wrapped',
+					local,
 				};
 			} else if (podChanged) {
 				await pull(vault, fetcher, entry, path, state, report);
 			} else if (localChanged) {
-				const wrapped = entry.kind === 'wrapped';
-				// Deliberately gated on `authenticated`, not `writable`: writing an
-				// existing resource needs permission on that resource, which a pod
-				// can grant without granting the container — sharing one note out of
-				// a container you may not otherwise write is an ordinary Solid setup.
-				// The cost of being wrong is one refused PUT, once per edit.
-				if (prev?.readOnly || !authenticated) {
-					markUnpushable(state, path, r.url, f.stat.mtime, r.modified, wrapped);
-					report.skipped.push(`${path} (local edit, read-only)`);
-				} else if (await push(fetcher, vault, f, prev.url, state)) {
+				// Gated on `authenticated`, not `writable`, and not on the resource's
+				// kind: writing an existing resource — RDF or not — needs permission on
+				// that resource, which a pod can grant without granting the container,
+				// or without the container saying so at all. What we are wrapping never
+				// decides this, only the pod's own answer does. The cost of being wrong
+				// is one refused PUT, once per edit.
+				const wrapped =
+					entry.kind === 'wrapped'
+						? unwrapNonMarkdown(await vault.read(f))
+						: null;
+				if (!authenticated) {
+					markUnpushable(state, path, r.url, f.stat.mtime, r.modified);
+					report.skipped.push(`${path} (local edit, no credentials)`);
+				} else if (entry.kind === 'wrapped' && !wrapped) {
+					// Say what is actually wrong. Reporting this as refused access would
+					// blame the pod for a note whose fenced source block was reshaped.
+					markUnpushable(state, path, r.url, f.stat.mtime, r.modified);
+					report.skipped.push(
+						`${path} (local edit, fenced source block no longer parses)`,
+					);
+				} else if (
+					await push(fetcher, vault, f, prev.url, state, wrapped ?? undefined)
+				) {
 					pushedPaths.push(path);
 					report.pushed++;
 				} else {
-					markUnpushable(
-						state,
-						path,
-						prev.url,
-						f.stat.mtime,
-						r.modified,
-						wrapped,
-					);
+					markUnpushable(state, path, prev.url, f.stat.mtime, r.modified);
 					report.skipped.push(`${path} (local edit, no write access)`);
 				}
 			}
@@ -497,11 +577,9 @@ async function syncPod(
 /**
  * Records a local edit we were not allowed to send, marking both sides seen so the
  * note keeps the user's text and the skip is reported once rather than in every
- * summary from here on.
- *
- * `readOnly` stays a fact about the resource — a wrapped RDF note is never pushable
- * — and not about this refusal. A pod that later grants write access would otherwise
- * find every note stuck, since the flag alone decides whether a push is attempted.
+ * summary from here on. Nothing here is permanent: `local` catches up to the
+ * current mtime, so the next *edit* tries again — the pod's answer is never cached
+ * past the one attempt it was given for.
  */
 function markUnpushable(
 	state: SyncState,
@@ -509,9 +587,8 @@ function markUnpushable(
 	url: string,
 	local: number,
 	pod: string,
-	readOnly: boolean,
 ) {
-	state[path] = { url, pod, local, readOnly };
+	state[path] = { url, pod, local };
 }
 
 /**
@@ -527,7 +604,12 @@ async function readRemote(
 	if (!res.ok) return null;
 	if (kind === 'raw') return res.arrayBuffer();
 	const body = await res.text();
-	return kind === 'note' ? body : wrapNonMarkdown(r, body);
+	// This resource's own WAC-Allow, not the container's: sharing one resource out
+	// of a container you may not write is ordinary Solid, so the answer that
+	// belongs in the note is the one that came back with the note's own bytes.
+	const canWrite = canWriteFrom(res.headers);
+	if (kind !== 'note') return wrapNonMarkdown(r, body, canWrite);
+	return canWrite === false ? markReadOnly(body) : body;
 }
 
 async function pull(
@@ -548,7 +630,6 @@ async function pull(
 		url: r.url,
 		pod: r.modified,
 		local: file.stat.mtime,
-		readOnly: kind === 'wrapped',
 	};
 	report.pulled++;
 }
@@ -557,6 +638,11 @@ async function pull(
  * Writes one file to the pod. Returns false when the pod refused it, rather than
  * throwing: a read-only pod refuses every write, and one refusal must not abandon
  * the rest of the run — the remaining files, and every pod after this one.
+ *
+ * `wrapped` is the already-unwrapped body of a fenced note: what is on disk is our
+ * frontmatter and fence, not the pod bytes, so the caller takes those off first and
+ * hands over what the resource itself holds — along with the content type the fence
+ * recorded, which beats what `mimeOf` guesses from a path that always ends in `.md`.
  */
 async function push(
 	fetcher: Fetcher,
@@ -564,23 +650,34 @@ async function push(
 	file: TFile,
 	url: string,
 	state: SyncState,
+	wrapped?: { body: string; contentType: string },
 ): Promise<boolean> {
-	const type = mimeOf(file.path);
+	let type = mimeOf(file.path);
+	let body: string | ArrayBuffer;
+	if (wrapped) {
+		// `unknown` is what the wrapper writes when the pod never declared a type,
+		// and it is not a media type — sending it back would be a malformed header.
+		// The `.md` the path ends in is our own invention, so text/plain over it.
+		type =
+			wrapped.contentType && wrapped.contentType !== 'unknown'
+				? wrapped.contentType
+				: 'text/plain';
+		body = wrapped.body;
+	} else if (type === 'text/markdown') {
+		// Access granted since the note was marked: send the note, not our label.
+		// ponytail: the local copy keeps the stale label until the pod side next
+		// moves and the note is pulled. Rewrite it here if that ever grates.
+		body = stripReadOnly(await vault.read(file));
+	} else {
+		body = await vault.readBinary(file);
+	}
 	const res = await fetcher(url, {
 		method: 'PUT',
 		headers: { 'content-type': type },
-		body:
-			type === 'text/markdown'
-				? await vault.read(file)
-				: await vault.readBinary(file),
+		body,
 	});
 	if (!res.ok) return false;
-	state[file.path] = {
-		url,
-		pod: '',
-		local: file.stat.mtime,
-		readOnly: false,
-	};
+	state[file.path] = { url, pod: '', local: file.stat.mtime };
 	return true;
 }
 

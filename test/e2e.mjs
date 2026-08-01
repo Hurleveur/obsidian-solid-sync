@@ -63,9 +63,11 @@ console.log('1. pull:', await runSync(plugin));
 assert.equal(read('Pod/e2e-pull.md'), '# from pod\n');
 ok('markdown pulled verbatim');
 const wrapped = read('Pod/e2e-data.ttl.md');
-assert.match(wrapped, /solid-readonly: true/);
 assert.match(wrapped, /```turtle\n<#a> <#b> "c"\.\n```/);
-ok('turtle pulled as a read-only note with fenced source');
+// Our own pod, so no read-only claim — the property tracks permission, and
+// section 12 checks the same code marks a pod we cannot write.
+if (ID) assert.doesNotMatch(wrapped, /solid-readonly/);
+ok('turtle pulled as a fenced note, marked read-only only when it is');
 
 // 1b. extensionless markdown (the pod's own README is stored this way) -------
 // It must land on a .md path, or the vault cannot see it and the next sync
@@ -166,16 +168,60 @@ fs.unlinkSync(path.join(root, 'Pod/e2e-big-local.md'));
 plugin.settings.maxFileMB = 10;
 await runSync(plugin);
 
-// 6. read-only note is never pushed ----------------------------------------
-write('Pod/e2e-data.ttl.md', 'tampered\n');
-const roRun = await runSync(plugin);
-assert.match(roRun, /skipped/);
-assert.equal(
-	await (await fetcher(new URL('e2e-data.ttl', POD).href)).text(),
-	'<#a> <#b> "c".\n',
+// 6. editing a wrapped RDF note pushes the unwrapped body back -------------
+// Read-only is a fact about what the pod says, never about what the note wraps.
+write(
+	'Pod/e2e-data.ttl.md',
+	wrapped.replace('<#a> <#b> "c".', '<#a> <#b> "edited".'),
 );
-ok('edit to a read-only note is skipped, pod untouched');
 await runSync(plugin);
+// The fence trims trailing whitespace on the way in, so a round trip through an
+// edit does too — insignificant for turtle, and the price of editing as text.
+const ttlAfterEdit = await fetcher(new URL('e2e-data.ttl', POD).href);
+assert.equal(await ttlAfterEdit.text(), '<#a> <#b> "edited".');
+assert.equal(ttlAfterEdit.headers.get('content-type')?.split(';')[0], 'text/turtle');
+ok('editing a wrapped note pushes the unwrapped body back with its content type');
+assert.match(await runSync(plugin), /^0 pulled, 0 pushed/);
+ok('pushed wrapped note does not bounce back on the next run');
+
+// 6b. a note wrapped by an older version is not a conflict against itself ----
+// The frontmatter and fence are ours; only the fenced body is the pod's. Notes
+// pulled before `solid-readonly` was dropped must have their wrapper refreshed,
+// never announced as a conflict — nothing about the resource changed.
+const legacyPath = 'Pod/e2e-data.ttl.md';
+write(
+	legacyPath,
+	read(legacyPath).replace(
+		/^(solid-content-type: .+)$/m,
+		'$1\nsolid-readonly: true',
+	),
+);
+// Move both sides' recorded state so the run takes the both-changed branch.
+plugin.state[legacyPath].pod = 'stale';
+plugin.state[legacyPath].local = 0;
+assert.match(await runSync(plugin), /^1 pulled|^0 pulled, 0 pushed/);
+assert.doesNotMatch(read(legacyPath), /solid-readonly/);
+assert.equal(
+	fs.readdirSync(path.join(root, 'Pod')).filter((f) => f.includes('conflict')).length,
+	0,
+	'a wrapper-only difference breeds no conflict copy',
+);
+ok('an older wrapper is refreshed in place, not reported as a conflict');
+
+// 6c. the same for a markdown note that was marked read-only ----------------
+// Access granted since the note was pulled: our property has to come back off
+// without the note reading as changed on both sides.
+write('Pod/e2e-pull.md', `---\nsolid-readonly: true\n---\n# from pod\n`);
+plugin.state['Pod/e2e-pull.md'].pod = 'stale';
+plugin.state['Pod/e2e-pull.md'].local = 0;
+await runSync(plugin);
+assert.equal(read('Pod/e2e-pull.md'), '# from pod\n', 'the label is gone, the note is not');
+assert.equal(
+	fs.readdirSync(path.join(root, 'Pod')).filter((f) => f.includes('conflict')).length,
+	0,
+	'losing the read-only label is not a conflict either',
+);
+ok('a note marked read-only loses the label once access is granted');
 
 // 7. conflict: both sides change -------------------------------------------
 write('Pod/e2e-local.md', '# local version\n');
@@ -276,6 +322,43 @@ if (POD_2) {
 	assert.equal(two.settings.pods[0].access, 'read');
 	assert.equal(two.settings.pods[1].access, 'write');
 	ok('each pod is mirrored into its own folder, with access discovered');
+
+	// `solid-readonly` states what this pod answered about this resource. Whether
+	// the pod has anything fenced to check is up to whoever set POD_URL_2 — the
+	// labelling itself is covered without a network in test/access.mjs.
+	const sharedWrapped = shared.filter((f) =>
+		fs.readFileSync(path.join(root2, f.path), 'utf8').includes('solid-content-type:'),
+	);
+	for (const f of sharedWrapped) {
+		assert.match(
+			fs.readFileSync(path.join(root2, f.path), 'utf8'),
+			/solid-readonly: true/,
+			`${f.path} is not ours to write, and says so`,
+		);
+	}
+	console.log(
+		sharedWrapped.length
+			? `  ok  ${sharedWrapped.length} fenced note(s) from a pod we cannot write are marked read-only`
+			: '   (no fenced resource on POD_URL_2 — read-only labelling checked in access.mjs)',
+	);
+
+	// An ordinary markdown note on a pod we cannot write is marked too — one
+	// property, no fence, so links and embeds still work. This is the one case
+	// where a note is not byte-for-byte, and only this case.
+	const sharedNotes = shared.filter((f) => !sharedWrapped.includes(f));
+	for (const f of sharedNotes) {
+		const text = fs.readFileSync(path.join(root2, f.path), 'utf8');
+		assert.ok(
+			text.startsWith('---\nsolid-readonly: true\n'),
+			`${f.path} is markdown we cannot write, and says so in its properties`,
+		);
+		assert.doesNotMatch(text, /```/, 'a note is never fenced — that would break its links');
+	}
+	if (sharedNotes.length) ok('markdown we cannot write is marked, without a fence');
+
+	// A second run must not read our own property as the pod having changed.
+	assert.match(await runSync(two), /^0 pulled, 0 pushed/);
+	ok('the read-only property does not make the note look changed');
 
 	fs.appendFileSync(path.join(root2, shared[0].path), '\nnot mine to change\n');
 	fs.writeFileSync(path.join(root2, 'Pod/e2e-two.md'), '# written past a 403\n');
