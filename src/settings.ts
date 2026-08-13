@@ -252,6 +252,18 @@ export class SolidSyncSettingTab extends PluginSettingTab {
 					}),
 			);
 
+		// The count in the status line is the whole of what a skip used to say. Folded
+		// away because a healthy run has none, and open is where you look when the
+		// number is not the one you expected.
+		if (last?.skipped?.length) {
+			const details = containerEl.createEl('details');
+			details.createEl('summary', {
+				text: `${last.skipped.length} skipped — why`,
+			});
+			const list = details.createEl('ul');
+			for (const line of last.skipped) list.createEl('li', { text: line });
+		}
+
 		this.displayPods(containerEl);
 
 		new Setting(containerEl)

@@ -174,6 +174,15 @@ no clock comparison between machines is needed. Assumes one editor at a time.
 | Deleted locally | Pod copy kept, unless **Delete on pod** is enabled. It is not pulled again — see **Restore deleted notes** below |
 | Many notes missing at once | All pod deletions refused — a renamed or unmounted folder cannot empty your pod. Counted per pod, so adding pods never weakens the guard |
 | Pod refuses the write | Reported as skipped, that pod's copy left alone, the run carries on |
+| Pod pointed at another container | The folder's sync history named the old container, so it is forgotten. The new container is pulled in full, rather than its resources being read as notes you deleted and your notes as ones it deleted |
+
+### Why a file was skipped
+
+Every summary ends in a count of files the run left alone, and the count on its own
+never says which or why. **Settings → Solid Pod Sync → Status** lists them under the
+count, one line per file: no read access, over the size limit, a local edit the pod
+refused, a name another resource already took. A healthy run skips nothing and the
+list is not shown.
 
 ### Restore deleted notes
 

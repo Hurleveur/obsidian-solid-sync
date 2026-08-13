@@ -17,6 +17,8 @@ export interface LastRun {
 	at: string;
 	result?: string;
 	error?: string;
+	/** One line per file the run left alone, saying which and why. */
+	skipped?: string[];
 }
 
 interface PluginData extends SolidSyncSettings {
@@ -28,6 +30,8 @@ export default class SolidSyncPlugin extends Plugin {
 	settings!: SolidSyncSettings;
 	state: SyncState = {};
 	lastRun?: LastRun;
+	/** Filled by the run in flight; only a completed one reaches `lastRun`. */
+	lastSkipped: string[] = [];
 	private syncing = false;
 	private pending?: number;
 	private quietUntil = 0;
@@ -85,7 +89,11 @@ export default class SolidSyncPlugin extends Plugin {
 		const notice = new Notice('Syncing pod…', 0);
 		try {
 			const result = await runSync(this);
-			this.lastRun = { at: new Date().toISOString(), result };
+			this.lastRun = {
+				at: new Date().toISOString(),
+				result,
+				skipped: this.lastSkipped,
+			};
 			notice.setMessage(`Solid sync: ${result}`);
 		} catch (e) {
 			this.lastRun = {
