@@ -15,6 +15,11 @@ is true about *this* plugin.
   use two folders inside one pod, never two pods.
 - Confirm a new sync test fails with its fix removed. A repoint scenario built on an
   untouched file passes either way — the plain pull branch rewrites state on its own.
+- The stub is the *host*, not the server: it may fake what Obsidian does to us.
+  `vault.unindexed` holds paths on disk the index denies, and `create` throws on an
+  existing path, both as the real vault behaves.
+- A bug only reproducible in real Obsidian is still reproducible here — model the API
+  difference in the stub rather than concluding the plugin logic is clean.
 
 ## Sync invariants
 
@@ -22,10 +27,19 @@ is true about *this* plugin.
   check the entry's `url` still starts with this pod's root.
 - Anything walking `state` under a pod's folder must skip `claimed()` paths — a
   nested pod's entries name its own container and are not this pod's to drop.
-- Record the local mtime from the file `writeFile` returns, never from a `TFile`
-  captured before the write; the pre-write stat makes the pull read as a local edit.
+- Record the local mtime `writeFile` returns, never one read off a `TFile` captured
+  before the write; the pre-write stat makes the pull read as a local edit.
+- Nothing in the per-path loop may throw out of it. One resource failing must cost
+  that resource only — it used to end the container, silently, on every later run.
 - Every path a run leaves alone or removes must say so — a `report.skipped` line or
-  a `report.deleted*` counter. The summary string carries counts only.
+  a `report.deleted*` counter. The summary string carries counts only. A skip naming
+  a folder rather than a file means a whole pod was unreachable, nothing less.
+- A pod name is not a vault name: `:` `?` `*` `"` `<` `>` `|` are legal in a URL and
+  rejected by Obsidian. Assume any single write can fail on a name the pod accepted.
+- `getFileByPath`/`getFiles` answer from Obsidian's index, `adapter.exists` from the
+  disk, and they disagree — `create` throws on a path already on disk. Check both.
+- Removing a pod row must drop its state entries (`ownedBy`), or they strand under a
+  folder no run visits again.
 
 ## Installing a build
 

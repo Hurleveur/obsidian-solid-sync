@@ -61,6 +61,9 @@ Put both in `<vault>/.obsidian/plugins/solid-sync/`, then refresh the list under
    refused, because a note in two pods' folders would be pushed to the wrong one.
    Filing one pod's folder *inside* another's is fine — see
    [A pod inside a pod's folder](#a-pod-inside-a-pods-folder).
+5. Removing a pod keeps its notes and forgets its sync history, so pointing a new pod
+   at that folder later starts clean. Notes belonging to a pod filed inside it are
+   left alone.
 
 ## Many pods, one identity
 
@@ -174,6 +177,7 @@ no clock comparison between machines is needed. Assumes one editor at a time.
 | Deleted locally | Pod copy kept, unless **Delete on pod** is enabled. It is not pulled again — see **Restore deleted notes** below |
 | Many notes missing at once | All pod deletions refused — a renamed or unmounted folder cannot empty your pod. Counted per pod, so adding pods never weakens the guard |
 | Pod refuses the write | Reported as skipped, that pod's copy left alone, the run carries on |
+| Vault refuses the name | A pod name is not a vault name — `:` and `?` are ordinary in a URL and illegal in an Obsidian file name. That one resource is reported as skipped and retried on the next run; every other resource in the container syncs normally |
 | Pod pointed at another container | The folder's sync history named the old container, so it is forgotten and the new one is pulled in full. Files the old container left and you never touched are its copies: replaced where the new container has that name, moved to trash where it does not. Anything you edited is yours and is kept |
 
 ### Why a file was skipped
@@ -181,8 +185,12 @@ no clock comparison between machines is needed. Assumes one editor at a time.
 Every summary ends in a count of files the run left alone, and the count on its own
 never says which or why. **Settings → Solid Pod Sync → Status** lists them under the
 count, one line per file: no read access, over the size limit, a local edit the pod
-refused, a name another resource already took. A healthy run skips nothing and the
-list is not shown.
+refused, a name another resource already took, a name the vault itself will not
+accept. A healthy run skips nothing and the list is not shown.
+
+Every resource a run does not sync is named there. A line naming a *folder* rather
+than a file is the exception: it means that pod could not be reached at all, and its
+container was left untouched.
 
 ### Restore deleted notes
 
@@ -320,8 +328,17 @@ Pointing a pod at another container without changing its vault folder — writes
 POD_URL=…/rp-a/ POD_URL_2=…/rp-b/ POD_ID=… POD_SECRET=… node test/repoint.mjs
 ```
 
-Trigger rules, access parsing, settings migration, content comparison and the
-restore list, no network needed:
+One resource the vault refuses, and the container behind it — writes `uw-*`
+resources. Checks that a path Obsidian will not write costs that path alone, names
+itself in the skip list and is retried, and that a file on disk the index has not
+seen is written rather than throwing:
+
+```bash
+POD_URL=… POD_ID=… POD_SECRET=… node test/unwritable.mjs
+```
+
+Trigger rules, access parsing, settings migration, content comparison, the restore
+list and what a removed pod takes with it, no network needed:
 
 ```bash
 node test/trigger.mjs

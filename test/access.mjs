@@ -13,6 +13,7 @@ import {
 	matchesLocal,
 	migrateSettings,
 	nestedFolders,
+	ownedBy,
 	staleBindings,
 	stripReadOnly,
 	unwrapNonMarkdown,
@@ -359,5 +360,43 @@ for (const canWrite of [true, false, undefined]) {
 		body: 'x\ny',
 	});
 }
+
+// --- what a removed pod takes with it ---------------------------------------
+// Removing the row leaves the notes. Leaving the history too is what strands it:
+// under a folder no pod owns, no run visits those entries again to refresh or drop
+// them, and they read as this folder's past if it is ever synced again.
+const removedState = {
+	'Pod/a.md': { url: 'https://pod.example.eu/alexandre/a.md', pod: '', local: 1 },
+	'Pod/sub/b.md': {
+		url: 'https://pod.example.eu/alexandre/sub/b.md',
+		pod: '',
+		local: 1,
+	},
+	'Pod/nicolas/c.md': {
+		url: 'https://pod.example.eu/nicolas/c.md',
+		pod: '',
+		local: 1,
+	},
+	'Other/d.md': { url: 'https://pod.example.eu/other/d.md', pod: '', local: 1 },
+};
+// A pod still filed inside the removed one keeps its own entries: they name its
+// container, and it is still configured and still syncing them.
+assert.deepEqual(ownedBy(removedState, 'Pod', [{ url: other, folder: 'Pod/nicolas' }]), [
+	'Pod/a.md',
+	'Pod/sub/b.md',
+]);
+// With nothing nested, every entry under the folder goes.
+assert.deepEqual(ownedBy(removedState, 'Pod', []), [
+	'Pod/a.md',
+	'Pod/sub/b.md',
+	'Pod/nicolas/c.md',
+]);
+// Another folder's entries are never this row's to drop, prefix or not.
+assert.deepEqual(ownedBy(removedState, 'Po', []), []);
+assert.deepEqual(ownedBy(removedState, 'Other', []), ['Other/d.md']);
+// A row removed before it was ever given a folder owns nothing at all — dropping
+// every entry in the vault is the one outcome that must not be possible here.
+assert.deepEqual(ownedBy(removedState, '', []), []);
+assert.deepEqual(ownedBy(removedState, '/', []), []);
 
 console.log('access rules: all checks passed');

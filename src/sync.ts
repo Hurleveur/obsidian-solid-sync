@@ -147,6 +147,27 @@ export function nestedFolders(pods: PodConfig[], folder: string): string[] {
 		.map((other) => `${other}/`);
 }
 
+/**
+ * Synced paths that belong to `folder` and to nothing else — everything under it bar
+ * what a pod still configured inside it keeps, since a nested pod's entries name its
+ * own container and outlive the folder above them. Used when a pod row is removed:
+ * its notes stay, but its history has to go with it or no run will ever visit those
+ * entries again to refresh or drop them.
+ */
+export function ownedBy(
+	state: SyncState,
+	folder: string,
+	remaining: PodConfig[],
+): string[] {
+	const base = normalizePath(folder);
+	if (!base || base === '/') return [];
+	const nested = nestedFolders(remaining, base);
+	return Object.keys(state).filter(
+		(path) =>
+			path.startsWith(`${base}/`) && !nested.some((n) => path.startsWith(n)),
+	);
+}
+
 /** Conflict copies live in the synced folder but are local scratch — never pushed. */
 const CONFLICT_COPY = / \(pod conflict [^)]*\)(\.[^./]+)?$/;
 
@@ -242,11 +263,24 @@ export function unwrapNonMarkdown(
 	return m ? { contentType: m[1] ?? '', body: m[2] ?? '' } : null;
 }
 
+/**
+ * Writes one pulled resource and returns the mtime it landed with. The mtime is all
+ * either caller wants, and it is the one thing a `TFile` cannot be trusted for here:
+ * the write just moved it, and a handle taken before the write still carries the old
+ * one — recorded, that makes the note we have just written read as a local edit next
+ * run and be pushed straight back.
+ *
+ * `getFileByPath` answers from Obsidian's index, `adapter.exists` from the disk, and
+ * the two disagree more often than they look like they should: a file arriving from
+ * git or another sync, anything under a dot-folder, or simply the index not having
+ * caught up yet. Asking `create` for a path already on disk throws, so the three
+ * cases are kept apart — index hit, disk hit, genuinely new.
+ */
 async function writeFile(
 	vault: Vault,
 	path: string,
 	content: string | ArrayBuffer,
-) {
+): Promise<number> {
 	const dir = path.slice(0, path.lastIndexOf('/'));
 	if (dir && !(await vault.adapter.exists(dir))) {
 		await vault.createFolder(dir);
@@ -256,14 +290,22 @@ async function writeFile(
 	if (existing) {
 		if (text) await vault.modify(existing, content);
 		else await vault.modifyBinary(existing, content);
-		// Both callers record this file's mtime as the state of the local side, and
-		// the write just moved it. Ask again rather than hand back the stat we were
-		// holding before it, which is one the vault no longer agrees with — recorded,
-		// it makes the note we have just written read as a local edit next run and be
-		// pushed straight back.
-		return vault.getFileByPath(path) ?? existing;
+	} else if (await vault.adapter.exists(path)) {
+		if (text) await vault.adapter.write(path, content);
+		else await vault.adapter.writeBinary(path, content);
+	} else {
+		const created = text
+			? await vault.create(path, content)
+			: await vault.createBinary(path, content);
+		return created.stat.mtime;
 	}
-	return text ? vault.create(path, content) : vault.createBinary(path, content);
+	// The index first: its mtime is the one `getFiles` will report next run, and
+	// comparing against anything else would read as an edit nobody made.
+	return (
+		vault.getFileByPath(path)?.stat.mtime ??
+		(await vault.adapter.stat(path))?.mtime ??
+		0
+	);
 }
 
 /**
@@ -499,8 +541,7 @@ async function syncPod(
 
 	// --- decide per path ------------------------------------------------------
 	const pushedPaths: string[] = [];
-	for (const path of new Set([...remote.keys(), ...local.keys(), ...known])) {
-		if (oversize.has(path)) continue;
+	const syncPath = async (path: string) => {
 		const entry = remote.get(path);
 		const r = entry?.r;
 		const f = local.get(path);
@@ -513,7 +554,7 @@ async function syncPod(
 				const podCopy = await readRemote(fetcher, r, entry.kind);
 				if (podCopy === null) {
 					report.skipped.push(`${path} (no read access)`);
-					continue;
+					return;
 				}
 				let local = f.stat.mtime;
 				if (!(await matchesLocal(vault, f, podCopy))) {
@@ -526,7 +567,7 @@ async function syncPod(
 					const theirs =
 						typeof podCopy === 'string' ? podText(entry.kind, podCopy) : null;
 					if (mine !== null && mine === theirs) {
-						local = (await writeFile(vault, path, podCopy)).stat.mtime;
+						local = await writeFile(vault, path, podCopy);
 					} else {
 						// Named after the pod revision, so repeated syncs refresh one copy
 						// instead of breeding a new file every run.
@@ -617,6 +658,22 @@ async function syncPod(
 		} else {
 			delete state[path];
 		}
+	};
+
+	// A path can fail on its own: the vault refuses a name the pod is perfectly happy
+	// with (`:` and `?` are ordinary in a URL and illegal in an Obsidian file name), a
+	// file moves under us, a write fails. Uncaught, one of those used to end the pod
+	// here — every path after it left unpulled, unpushed and unmentioned, with only
+	// the folder named in the summary. Iteration order is stable, so it stayed lost on
+	// every later run too. Nothing is recorded for the path, so the next run tries it
+	// again rather than reading it as synced.
+	for (const path of new Set([...remote.keys(), ...local.keys(), ...known])) {
+		if (oversize.has(path)) continue;
+		try {
+			await syncPath(path);
+		} catch (e) {
+			report.skipped.push(`${path} (${(e as Error).message})`);
+		}
 	}
 
 	// Pushed resources have a new server timestamp; refresh it so the next run
@@ -691,11 +748,10 @@ async function pull(
 		report.skipped.push(`${r.url} (no read access)`);
 		return;
 	}
-	const file = await writeFile(vault, path, content);
 	state[path] = {
 		url: r.url,
 		pod: r.modified,
-		local: file.stat.mtime,
+		local: await writeFile(vault, path, content),
 	};
 	report.pulled++;
 }

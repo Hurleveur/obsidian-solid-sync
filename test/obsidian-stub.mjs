@@ -48,8 +48,24 @@ export class Vault {
 		this.root = root;
 		this.adapter = {
 			exists: async (p) => fs.existsSync(path.join(root, p)),
+			write: async (p, data) => {
+				fs.mkdirSync(path.dirname(this.abs(p)), { recursive: true });
+				fs.writeFileSync(this.abs(p), data);
+			},
+			writeBinary: async (p, data) => this.adapter.write(p, Buffer.from(data)),
+			stat: async (p) => {
+				if (!fs.existsSync(this.abs(p))) return null;
+				const st = fs.statSync(this.abs(p));
+				return { mtime: st.mtimeMs, size: st.size, type: 'file' };
+			},
 		};
 	}
+	/**
+	 * Paths that are on disk but absent from the index — the real vault's two views of
+	 * a file do come apart (a note arriving from git or another sync, a dot-folder, the
+	 * index simply not caught up), and `create` throws on a path that already exists.
+	 */
+	unindexed = new Set();
 	abs(p) {
 		return path.join(this.root, p);
 	}
@@ -65,9 +81,13 @@ export class Vault {
 		fs.mkdirSync(this.abs(p), { recursive: true });
 	}
 	getFileByPath(p) {
+		if (this.unindexed.has(p)) return null;
 		return fs.existsSync(this.abs(p)) ? this.file(p) : null;
 	}
 	async create(p, data) {
+		if (fs.existsSync(this.abs(p))) {
+			throw new Error(`File already exists: ${p}`);
+		}
 		fs.mkdirSync(path.dirname(this.abs(p)), { recursive: true });
 		fs.writeFileSync(this.abs(p), data);
 		return this.file(p);
@@ -95,7 +115,8 @@ export class Vault {
 			for (const e of fs.readdirSync(this.abs(dir), { withFileTypes: true })) {
 				const rel = dir ? `${dir}/${e.name}` : e.name;
 				if (e.isDirectory()) walk(rel);
-				else if (filter(e.name)) out.push(this.file(rel));
+				else if (filter(e.name) && !this.unindexed.has(rel))
+					out.push(this.file(rel));
 			}
 		};
 		walk('');

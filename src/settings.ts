@@ -1,7 +1,7 @@
 import { App, Modal, Notice, PluginSettingTab, Setting } from 'obsidian';
 import type SolidSyncPlugin from './main';
 import { createClientCredentials } from './solid';
-import { deletedLocally, folderClash } from './sync';
+import { deletedLocally, folderClash, ownedBy } from './sync';
 
 /** One pod container mirrored into one vault folder. */
 export interface PodConfig {
@@ -222,7 +222,22 @@ export class SolidSyncSettingTab extends PluginSettingTab {
 						.setIcon('trash-2')
 						.setTooltip('Remove this pod (vault notes are kept)')
 						.onClick(async () => {
-							pods.splice(i, 1);
+							const [removed] = pods.splice(i, 1);
+							// The notes stay, and until now so did their sync
+							// history — under a folder no pod owns, no run visits
+							// those entries again to refresh or drop them. They
+							// come back to life if that folder is ever synced
+							// again, describing a pod nobody configured any more.
+							if (removed?.folder) {
+								for (const path of ownedBy(
+									this.plugin.state,
+									removed.folder,
+									pods,
+								)) {
+									delete this.plugin.state[path];
+								}
+								await this.plugin.saveState();
+							}
 							await this.plugin.saveSettings();
 							this.display();
 						}),
