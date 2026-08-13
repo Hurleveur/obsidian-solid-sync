@@ -121,6 +121,7 @@ assert.deepEqual(nestedFolders(nestedPods, '/'), []);
 // every run and never pulled.
 const alex = 'https://pod.example.eu/alex/';
 const other = 'https://pod.example.eu/hyperscope/';
+const nothingClaimed = () => false;
 const repointed = {
 	'Pod/README.md': { url: `${other}README`, pod: '', local: 1 },
 	'Pod/profile/card.md': { url: `${other}profile/card`, pod: '', local: 1 },
@@ -128,20 +129,39 @@ const repointed = {
 	'Elsewhere/note.md': { url: `${other}note.md`, pod: '', local: 1 },
 };
 assert.deepEqual(
-	staleBindings(repointed, 'Pod', alex),
+	staleBindings(repointed, 'Pod', alex, nothingClaimed),
 	['Pod/README.md', 'Pod/profile/card.md'],
 	'exactly the entries naming the pod that is no longer mirrored here',
 );
 // Another pod's folder is another pod's business, even when its entries are stale
 // for it too — this run only knows what its own root should contain.
-assert.deepEqual(staleBindings(repointed, 'Elsewhere', other), []);
+assert.deepEqual(staleBindings(repointed, 'Elsewhere', other, nothingClaimed), []);
 // The folder is a path segment, not a string prefix: `Pod2` is not inside `Pod`.
-assert.deepEqual(staleBindings({ 'Pod2/x.md': { url: `${other}x.md`, pod: '', local: 1 } }, 'Pod', alex), []);
+assert.deepEqual(
+	staleBindings({ 'Pod2/x.md': { url: `${other}x.md`, pod: '', local: 1 } }, 'Pod', alex, nothingClaimed),
+	[],
+);
 // And neither is a container whose name merely starts with ours.
 assert.deepEqual(
-	staleBindings({ 'Pod/x.md': { url: 'https://pod.example.eu/alexandre/x.md', pod: '', local: 1 } }, 'Pod', alex),
+	staleBindings({ 'Pod/x.md': { url: 'https://pod.example.eu/alexandre/x.md', pod: '', local: 1 } }, 'Pod', alex, nothingClaimed),
 	['Pod/x.md'],
 	'a longer pod name is a different pod',
+);
+// A pod filed inside this folder holds entries naming its own container, which is
+// exactly what "not ours" looks like from here. Dropping them would take another
+// pod's history with it, and the notes behind it — they belong to the innermost
+// folder, and this pod does not get a say.
+const inner = nestedFolders([{ url: other, folder: 'Pod/nicolas' }], 'Pod');
+assert.deepEqual(inner, ['Pod/nicolas/'], 'the inner folder is the one claimed');
+assert.deepEqual(
+	staleBindings(
+		{ 'Pod/nicolas/README.md': { url: `${other}README`, pod: '', local: 1 } },
+		'Pod',
+		alex,
+		(p) => inner.some((n) => p.startsWith(n)),
+	),
+	[],
+	'the inner pod’s entries are never the outer pod’s to forget',
 );
 
 // --- reading a media type off a container listing --------------------------

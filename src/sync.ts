@@ -256,7 +256,12 @@ async function writeFile(
 	if (existing) {
 		if (text) await vault.modify(existing, content);
 		else await vault.modifyBinary(existing, content);
-		return existing;
+		// Both callers record this file's mtime as the state of the local side, and
+		// the write just moved it. Ask again rather than hand back the stat we were
+		// holding before it, which is one the vault no longer agrees with — recorded,
+		// it makes the note we have just written read as a local edit next run and be
+		// pushed straight back.
+		return vault.getFileByPath(path) ?? existing;
 	}
 	return text ? vault.create(path, content) : vault.createBinary(path, content);
 }
@@ -304,9 +309,16 @@ export function staleBindings(
 	state: SyncState,
 	base: string,
 	root: string,
+	claimed: (path: string) => boolean,
 ): string[] {
 	return Object.keys(state).filter(
-		(path) => path.startsWith(`${base}/`) && !state[path]?.url.startsWith(root),
+		(path) =>
+			path.startsWith(`${base}/`) &&
+			// A pod filed inside this folder keeps its own entries, and they name its
+			// own container. To this pod every one of them looks stale, and acting on
+			// that would drop another pod's history and trash the notes behind it.
+			!claimed(path) &&
+			!state[path]?.url.startsWith(root),
 	);
 }
 
@@ -384,7 +396,19 @@ async function syncPod(
 	// Left by a pod repointed at another container while keeping its folder. Dropped
 	// before anything reads them, so every branch below sees the folder as this pod
 	// has never synced it — which, for the container now configured, it has not.
-	for (const path of staleBindings(state, base, root)) delete state[path];
+	//
+	// The file each one left in the vault is the old container's copy. Untouched
+	// since we wrote it, it is that pod's data and not the user's work, so it is not
+	// held as local: it would read as an edit against a pod that has never seen it,
+	// and the two would be filed as a conflict with the old container's copy keeping
+	// the name. Edited since, it is the user's, and stays — as a note this folder's
+	// pod does not have yet.
+	const carriedOver = new Set<string>();
+	for (const path of staleBindings(state, base, root, claimed)) {
+		const file = vault.getFileByPath(path);
+		if (file && file.stat.mtime === state[path]?.local) carriedOver.add(path);
+		delete state[path];
+	}
 
 	// --- gather both sides, keyed by vault path -------------------------------
 	// Too big to move, on either side. Such a path is left out of the whole
@@ -440,11 +464,24 @@ async function syncPod(
 		if (
 			file.path.startsWith(`${base}/`) &&
 			!claimed(file.path) &&
+			!carriedOver.has(file.path) &&
 			!CONFLICT_COPY.test(file.path) &&
 			!tooBig(file.path, file.stat.size, 'in the vault')
 		) {
 			local.set(file.path, file);
 		}
+	}
+
+	// A leftover of the old container that the new one does not have. It is a mirror
+	// of a resource this folder no longer syncs, byte for byte as we wrote it, and
+	// left on disk it would be read next run as a note the user wrote and pushed into
+	// a pod it never came from. Trash rather than delete: recoverable is the right
+	// answer for anything we remove on the user's behalf.
+	for (const path of carriedOver) {
+		const file = remote.has(path) ? null : vault.getFileByPath(path);
+		if (!file) continue;
+		await plugin.app.fileManager.trashFile(file);
+		report.deletedLocal++;
 	}
 
 	// A renamed or unmounted folder makes every note look deleted at once. Refuse to

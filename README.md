@@ -174,7 +174,7 @@ no clock comparison between machines is needed. Assumes one editor at a time.
 | Deleted locally | Pod copy kept, unless **Delete on pod** is enabled. It is not pulled again — see **Restore deleted notes** below |
 | Many notes missing at once | All pod deletions refused — a renamed or unmounted folder cannot empty your pod. Counted per pod, so adding pods never weakens the guard |
 | Pod refuses the write | Reported as skipped, that pod's copy left alone, the run carries on |
-| Pod pointed at another container | The folder's sync history named the old container, so it is forgotten. The new container is pulled in full, rather than its resources being read as notes you deleted and your notes as ones it deleted |
+| Pod pointed at another container | The folder's sync history named the old container, so it is forgotten and the new one is pulled in full. Files the old container left and you never touched are its copies: replaced where the new container has that name, moved to trash where it does not. Anything you edited is yours and is kept |
 
 ### Why a file was skipped
 
@@ -271,6 +271,22 @@ account page. That is a stronger guarantee than any local encryption.
 
 ## Tests
 
+The write suites need a pod to throw away, and a local
+[Community Solid Server](https://github.com/CommunitySolidServer/CommunitySolidServer)
+is the cheapest one. It is worth using a real server rather than a stub: the plugin
+has already been caught out once by how a real one publishes media types, which no
+hand-written fixture would have said.
+
+```bash
+echo '[{ "email": "t@example.com", "password": "testpassword", "pods": [{ "name": "first" }] }]' > seed.json
+npx @solid/community-server@7 -p 3000 -c @css:config/default.json -f ./data --seedConfig seed.json
+```
+
+Credentials come from the same account API the plugin's **Log in** button uses —
+`createClientCredentials('http://localhost:3000', 't@example.com', 'testpassword')`
+returns the id and secret the suites want. They are minted per WebID, so one set
+reaches one pod: for two containers, use two folders inside it.
+
 Run against a real pod. Read-only, any public pod:
 
 ```bash
@@ -294,6 +310,14 @@ and that a locally deleted file stays deleted until its state entry is dropped:
 
 ```bash
 POD_URL=… POD_ID=… POD_SECRET=… node test/restore.mjs
+```
+
+Pointing a pod at another container without changing its vault folder — writes
+`rp-*` resources into two containers, which may be two folders in one scratch pod
+(client credentials are minted per WebID, so two pods usually means two identities):
+
+```bash
+POD_URL=…/rp-a/ POD_URL_2=…/rp-b/ POD_ID=… POD_SECRET=… node test/repoint.mjs
 ```
 
 Trigger rules, access parsing, settings migration, content comparison and the
