@@ -13,6 +13,7 @@ import {
 	matchesLocal,
 	migrateSettings,
 	nestedFolders,
+	staleBindings,
 	stripReadOnly,
 	unwrapNonMarkdown,
 	wrapNonMarkdown,
@@ -112,6 +113,36 @@ assert.deepEqual(nestedFolders([{ url: 'https://a.example/', folder: 'Pod' }], '
 // Nothing is configured yet, or the pod is the whole vault.
 assert.deepEqual(nestedFolders(nestedPods, ''), []);
 assert.deepEqual(nestedFolders(nestedPods, '/'), []);
+
+// --- state left by a pod pointed at a different container ------------------
+// Taken from a real vault: a folder was pulled from one pod, the row was then
+// repointed at another, and the entries kept naming the first. Their paths then
+// read as notes deleted locally, so what the new pod holds there is skipped on
+// every run and never pulled.
+const alex = 'https://pod.example.eu/alex/';
+const other = 'https://pod.example.eu/hyperscope/';
+const repointed = {
+	'Pod/README.md': { url: `${other}README`, pod: '', local: 1 },
+	'Pod/profile/card.md': { url: `${other}profile/card`, pod: '', local: 1 },
+	'Pod/shared/memory.md': { url: `${alex}shared/memory.md`, pod: '', local: 1 },
+	'Elsewhere/note.md': { url: `${other}note.md`, pod: '', local: 1 },
+};
+assert.deepEqual(
+	staleBindings(repointed, 'Pod', alex),
+	['Pod/README.md', 'Pod/profile/card.md'],
+	'exactly the entries naming the pod that is no longer mirrored here',
+);
+// Another pod's folder is another pod's business, even when its entries are stale
+// for it too — this run only knows what its own root should contain.
+assert.deepEqual(staleBindings(repointed, 'Elsewhere', other), []);
+// The folder is a path segment, not a string prefix: `Pod2` is not inside `Pod`.
+assert.deepEqual(staleBindings({ 'Pod2/x.md': { url: `${other}x.md`, pod: '', local: 1 } }, 'Pod', alex), []);
+// And neither is a container whose name merely starts with ours.
+assert.deepEqual(
+	staleBindings({ 'Pod/x.md': { url: 'https://pod.example.eu/alexandre/x.md', pod: '', local: 1 } }, 'Pod', alex),
+	['Pod/x.md'],
+	'a longer pod name is a different pod',
+);
 
 // --- reading a media type off a container listing --------------------------
 // Servers say it in two different ways and an empty content type is not

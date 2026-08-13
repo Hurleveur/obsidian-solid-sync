@@ -290,6 +290,26 @@ export function deletedLocally(
 	return Object.keys(state).filter((path) => !exists(path));
 }
 
+/**
+ * Synced paths under `base` whose recorded resource does not live in `root`. Only
+ * pointing a pod at a different container leaves these behind, and each one then
+ * describes the pod that used to be mirrored here rather than the one that is.
+ *
+ * Read as history they are wrong in every direction: the resource now at that path
+ * looks like a note deleted locally and is never pulled, a note the new pod lacks
+ * looks like one it deleted and is trashed, and a local edit is pushed to the old
+ * pod's URL. Forgetting them is what lets the run rediscover the path from scratch.
+ */
+export function staleBindings(
+	state: SyncState,
+	base: string,
+	root: string,
+): string[] {
+	return Object.keys(state).filter(
+		(path) => path.startsWith(`${base}/`) && !state[path]?.url.startsWith(root),
+	);
+}
+
 export async function runSync(plugin: SolidSyncPlugin): Promise<string> {
 	const { issuer, clientId, clientSecret, pods } = plugin.settings;
 	const configured = pods.filter((p) => p.url && p.folder);
@@ -334,6 +354,10 @@ export async function runSync(plugin: SolidSyncPlugin): Promise<string> {
 		}
 	}
 
+	// The summary can only carry a count, and a count says nothing about which file
+	// or why. Hand the reasons back so the settings tab can show them: a skip is the
+	// one outcome the user has to act on, and it is the one they cannot see.
+	plugin.lastSkipped = report.skipped;
 	await plugin.saveState();
 	return summarize(report, authenticated);
 }
@@ -356,6 +380,11 @@ async function syncPod(
 
 	const vault = plugin.app.vault;
 	const state: SyncState = plugin.state;
+
+	// Left by a pod repointed at another container while keeping its folder. Dropped
+	// before anything reads them, so every branch below sees the folder as this pod
+	// has never synced it — which, for the container now configured, it has not.
+	for (const path of staleBindings(state, base, root)) delete state[path];
 
 	// --- gather both sides, keyed by vault path -------------------------------
 	// Too big to move, on either side. Such a path is left out of the whole
