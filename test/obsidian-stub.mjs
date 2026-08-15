@@ -36,9 +36,162 @@ export class Notice {
 	}
 	hide() {}
 }
-export class Modal {}
-export class PluginSettingTab {}
-export class Setting {}
+// Just enough DOM for the settings tab to render into: children, text and
+// classes are recorded, nothing is drawn.
+const makeEl = () => ({
+	children: [],
+	settings: [],
+	text: '',
+	classes: new Set(),
+	createEl(tag, opts) {
+		const child = makeEl();
+		child.tag = tag;
+		if (opts?.text) child.text = opts.text;
+		this.children.push(child);
+		return child;
+	},
+	createDiv() {
+		return this.createEl('div');
+	},
+	createSpan() {
+		return this.createEl('span');
+	},
+	empty() {
+		this.children.length = 0;
+		this.settings.length = 0;
+		this.text = '';
+	},
+	setText(t) {
+		this.text = t;
+	},
+	appendText(t) {
+		this.text += t;
+	},
+	addClass(...cs) {
+		for (const c of cs) this.classes.add(c);
+	},
+	toggleClass(c, on) {
+		if (on) this.classes.add(c);
+		else this.classes.delete(c);
+	},
+});
+
+export function setIcon(el, icon) {
+	el.icon = icon;
+}
+
+export class Modal {
+	static opened = [];
+	constructor(app) {
+		this.app = app;
+		this.contentEl = makeEl();
+	}
+	setTitle(t) {
+		this.title = t;
+	}
+	open() {
+		Modal.opened.push(this);
+		this.onOpen?.();
+	}
+	close() {
+		this.onClose?.();
+	}
+	onOpen() {}
+	onClose() {}
+}
+
+export class PluginSettingTab {
+	constructor(app, plugin) {
+		this.app = app;
+		this.plugin = plugin;
+		this.containerEl = makeEl();
+	}
+}
+
+/** Records a button/text/toggle component; the tab wires callbacks onto it. */
+class Component {
+	constructor(kind) {
+		this.kind = kind;
+		this.inputEl = {};
+		this.buttonEl = makeEl();
+	}
+	setButtonText(t) {
+		this.buttonText = t;
+		return this;
+	}
+	setCta() {
+		return this;
+	}
+	setIcon(i) {
+		this.icon = i;
+		return this;
+	}
+	setTooltip(t) {
+		this.tooltip = t;
+		return this;
+	}
+	setDisabled(d) {
+		this.disabled = d;
+		return this;
+	}
+	setPlaceholder(p) {
+		this.placeholder = p;
+		return this;
+	}
+	setValue(v) {
+		this.value = v;
+		return this;
+	}
+	onChange(cb) {
+		this.changed = cb;
+		return this;
+	}
+	onClick(cb) {
+		this.clicked = cb;
+		return this;
+	}
+}
+
+export class Setting {
+	constructor(containerEl) {
+		this.nameEl = makeEl();
+		this.descEl = makeEl();
+		this.components = [];
+		containerEl?.settings?.push(this);
+	}
+	setName(n) {
+		this.name = n;
+		return this;
+	}
+	setDesc(d) {
+		this.desc = d;
+		this.descEl.setText(String(d));
+		return this;
+	}
+	setHeading() {
+		this.heading = true;
+		return this;
+	}
+	add(kind, cb) {
+		const c = new Component(kind);
+		cb(c);
+		this.components.push(c);
+		return this;
+	}
+	addButton(cb) {
+		return this.add('button', cb);
+	}
+	addExtraButton(cb) {
+		return this.add('extra-button', cb);
+	}
+	addText(cb) {
+		return this.add('text', cb);
+	}
+	addToggle(cb) {
+		return this.add('toggle', cb);
+	}
+}
+
 export class Plugin {}
 export class App {}
 export class TFile {}

@@ -1,4 +1,4 @@
-import { App, Modal, Notice, PluginSettingTab, Setting } from 'obsidian';
+import { App, Modal, Notice, PluginSettingTab, Setting, setIcon } from 'obsidian';
 import type SolidSyncPlugin from './main';
 import { createClientCredentials } from './solid';
 import { deletedLocally, folderClash, ownedBy } from './sync';
@@ -126,6 +126,59 @@ class LoginModal extends Modal {
 	}
 }
 
+/**
+ * One irreversible action behind a second click, with what will and will not
+ * happen spelled out. Closing any other way — Cancel, Escape, the X — cancels.
+ */
+class ConfirmModal extends Modal {
+	private confirmed = false;
+
+	constructor(
+		app: App,
+		title: string,
+		private body: string,
+		private cta: string,
+		private onConfirm: () => unknown,
+		private onCancel?: () => unknown,
+	) {
+		super(app);
+		this.setTitle(title);
+	}
+
+	onOpen() {
+		this.contentEl.createEl('p', { text: this.body });
+		new Setting(this.contentEl)
+			.addButton((btn) =>
+				btn.setButtonText('Cancel').onClick(() => this.close()),
+			)
+			.addButton((btn) => {
+				// setWarning() replacement, setDestructive(), needs a newer app
+				// than minAppVersion — the class is what both of them set.
+				btn.buttonEl.addClass('mod-warning');
+				btn
+					.setButtonText(this.cta)
+					.onClick(async () => {
+						this.confirmed = true;
+						await this.onConfirm();
+						this.close();
+					});
+			});
+	}
+
+	onClose() {
+		this.contentEl.empty();
+		if (!this.confirmed) this.onCancel?.();
+	}
+}
+
+const isWebAddress = (url: string) => {
+	try {
+		return /^https?:$/.test(new URL(url).protocol);
+	} catch {
+		return false;
+	}
+};
+
 const accessText = (access: PodConfig['access']) =>
 	access === 'write'
 		? 'Read and write.'
@@ -175,15 +228,22 @@ export class SolidSyncSettingTab extends PluginSettingTab {
 
 		if (!pods.length) {
 			containerEl.createEl('p', {
-				text: 'No pods yet. Add one to get started.',
+				text: 'No pods yet. Add pod is the first step: paste the address of any pod you can read, pick a vault folder for it, and its notes arrive on the next sync.',
 			});
 			return;
 		}
 
 		pods.forEach((pod, i) => {
-			new Setting(containerEl)
+			const row = new Setting(containerEl)
 				.setName(`Pod ${i + 1}`)
-				.setDesc(accessText(pod.access))
+				.setDesc(accessText(pod.access));
+			// Typing saves on every keystroke; this line is where that shows.
+			const note = row.descEl.createDiv();
+			const show = (msg: string, warn: boolean) => {
+				note.setText(msg);
+				note.toggleClass('mod-warning', warn);
+			};
+			row
 				.addText((t) =>
 					t
 						.setPlaceholder('https://pod.example.eu/alex/')
@@ -196,6 +256,10 @@ export class SolidSyncSettingTab extends PluginSettingTab {
 							// Permissions belong to the old URL, not this one.
 							delete pod.access;
 							await this.plugin.saveSettings();
+							if (!url) show('Saved. The address is still empty.', true);
+							else if (!isWebAddress(pod.url))
+								show('Saved, but this is not a full address yet.', true);
+							else show('Saved.', false);
 						}),
 				)
 				.addText((t) =>
@@ -208,38 +272,48 @@ export class SolidSyncSettingTab extends PluginSettingTab {
 							if (clash) {
 								// Two pods sharing one folder would each try to push
 								// the other's notes, so refuse rather than save.
-								new Notice(
-									`"${clash}" is already another pod's folder. Give each pod its own — a folder inside another pod's folder is fine.`,
+								show(
+									`"${clash}" is already another pod's folder, so this is not saved. A folder inside another pod's folder is fine.`,
+									true,
 								);
 								return;
 							}
 							pod.folder = folder;
 							await this.plugin.saveSettings();
+							show('Saved.', false);
 						}),
 				)
 				.addExtraButton((btn) =>
 					btn
 						.setIcon('trash-2')
-						.setTooltip('Remove this pod (vault notes are kept)')
-						.onClick(async () => {
-							const [removed] = pods.splice(i, 1);
-							// The notes stay, and until now so did their sync
-							// history — under a folder no pod owns, no run visits
-							// those entries again to refresh or drop them. They
-							// come back to life if that folder is ever synced
-							// again, describing a pod nobody configured any more.
-							if (removed?.folder) {
-								for (const path of ownedBy(
-									this.plugin.state,
-									removed.folder,
-									pods,
-								)) {
-									delete this.plugin.state[path];
-								}
-								await this.plugin.saveState();
-							}
-							await this.plugin.saveSettings();
-							this.display();
+						.setTooltip('Remove this pod')
+						.onClick(() => {
+							new ConfirmModal(
+								this.app,
+								'Remove this pod?',
+								'The connection goes; every note already in the vault stays where it is, and nothing on the pod is touched.',
+								'Remove pod',
+								async () => {
+									const [removed] = pods.splice(i, 1);
+									// The notes stay, and until now so did their sync
+									// history — under a folder no pod owns, no run visits
+									// those entries again to refresh or drop them. They
+									// come back to life if that folder is ever synced
+									// again, describing a pod nobody configured any more.
+									if (removed?.folder) {
+										for (const path of ownedBy(
+											this.plugin.state,
+											removed.folder,
+											pods,
+										)) {
+											delete this.plugin.state[path];
+										}
+										await this.plugin.saveState();
+									}
+									await this.plugin.saveSettings();
+									this.display();
+								},
+							).open();
 						}),
 				);
 		});
@@ -250,22 +324,28 @@ export class SolidSyncSettingTab extends PluginSettingTab {
 		containerEl.empty();
 
 		const last = this.plugin.lastRun;
-		new Setting(containerEl)
+		const status = new Setting(containerEl)
 			.setName('Status')
-			.setDesc(
-				last
-					? `${last.error ?? last.result ?? ''} — ${new Date(last.at).toLocaleString()}`
-					: 'Not synced yet.',
-			)
 			.addButton((btn) =>
 				btn
 					.setButtonText('Sync now')
 					.setCta()
 					.onClick(async () => {
+						btn.setDisabled(true).setButtonText('Syncing…');
 						await this.plugin.sync();
 						this.display();
 					}),
 			);
+		if (last) {
+			// A failed run must not read like a good one after the notice fades.
+			setIcon(status.descEl.createSpan(), last.error ? 'alert-triangle' : 'check');
+			status.descEl.appendText(
+				` ${last.error ?? last.result ?? ''} — ${new Date(last.at).toLocaleString()}`,
+			);
+			if (last.error) status.descEl.addClass('mod-warning');
+		} else {
+			status.setDesc('Not synced yet.');
+		}
 
 		// The count in the status line is the whole of what a skip used to say. Folded
 		// away because a healthy run has none, and open is where you look when the
@@ -309,21 +389,42 @@ export class SolidSyncSettingTab extends PluginSettingTab {
 				}),
 			)
 			.addButton((btn) =>
-				btn.setButtonText('Clear').onClick(async () => {
-					await this.set('issuer', '');
-					await this.set('clientId', '');
-					await this.set('clientSecret', '');
-					this.display();
-				}),
+				btn
+					.setButtonText('Clear')
+					.setDisabled(!this.plugin.settings.clientId)
+					.onClick(() => {
+						new ConfirmModal(
+							this.app,
+							'Clear credentials?',
+							'The token is removed from this vault only; your pod account is untouched. Every pod becomes read-only until you log in again, and nothing is deleted on either side.',
+							'Clear',
+							async () => {
+								await this.set('issuer', '');
+								await this.set('clientId', '');
+								await this.set('clientSecret', '');
+								this.display();
+							},
+						).open();
+					}),
 			);
 
+		new Setting(containerEl).setName('Syncing').setHeading();
+
+		new Setting(containerEl).setName('Sync on startup').addToggle((t) =>
+			t
+				.setValue(this.plugin.settings.syncOnStartup)
+				.onChange((v) => this.set('syncOnStartup', v)),
+		);
+
 		new Setting(containerEl)
-			.setName('Delete on pod when a note is deleted')
-			.setDesc('Off by default. Pod deletions cannot be undone.')
+			.setName('Sync after changes')
+			.setDesc(
+				'Syncs about 10 seconds after you add, edit, rename or delete a note in the folder. Waits for a burst of edits to settle.',
+			)
 			.addToggle((t) =>
 				t
-					.setValue(this.plugin.settings.pushDeletions)
-					.onChange((v) => this.set('pushDeletions', v)),
+					.setValue(this.plugin.settings.syncOnChange)
+					.onChange((v) => this.set('syncOnChange', v)),
 			);
 
 		new Setting(containerEl)
@@ -344,21 +445,27 @@ export class SolidSyncSettingTab extends PluginSettingTab {
 				});
 			});
 
-		new Setting(containerEl).setName('Sync on startup').addToggle((t) =>
-			t
-				.setValue(this.plugin.settings.syncOnStartup)
-				.onChange((v) => this.set('syncOnStartup', v)),
-		);
+		new Setting(containerEl).setName('Deleted notes').setHeading();
 
 		new Setting(containerEl)
-			.setName('Sync after changes')
-			.setDesc(
-				'Syncs about 10 seconds after you add, edit, rename or delete a note in the folder. Waits for a burst of edits to settle.',
-			)
+			.setName('Delete on pod when a note is deleted')
+			.setDesc('Off by default. Pod deletions cannot be undone.')
 			.addToggle((t) =>
-				t
-					.setValue(this.plugin.settings.syncOnChange)
-					.onChange((v) => this.set('syncOnChange', v)),
+				t.setValue(this.plugin.settings.pushDeletions).onChange((v) => {
+					// Turning it off needs no confirm — that only stops future deletions.
+					if (!v) {
+						void this.set('pushDeletions', false);
+						return;
+					}
+					new ConfirmModal(
+						this.app,
+						'Delete on the pod too?',
+						'From now on, deleting a note in the vault also deletes it on its pod, and a pod deletion cannot be undone. Turning this off again only stops future deletions.',
+						'Turn on',
+						() => this.set('pushDeletions', true),
+						() => t.setValue(false),
+					).open();
+				}),
 			);
 
 		new Setting(containerEl)

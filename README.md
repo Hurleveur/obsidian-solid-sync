@@ -338,11 +338,13 @@ POD_URL=… POD_ID=… POD_SECRET=… node test/unwritable.mjs
 ```
 
 Trigger rules, access parsing, settings migration, content comparison, the restore
-list and what a removed pod takes with it, no network needed:
+list, what a removed pod takes with it, and the settings tab's section order and
+confirm dialogs, no network needed:
 
 ```bash
 node test/trigger.mjs
 node test/access.mjs
+node test/settings-ui.mjs
 ```
 
 Both pods can be local. [Community Solid Server](https://github.com/CommunitySolidServer/CommunitySolidServer)
