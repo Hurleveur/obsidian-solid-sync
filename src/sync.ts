@@ -38,6 +38,12 @@ interface Report {
 	deletedRemote: number;
 	conflicts: string[];
 	skipped: string[];
+	/**
+	 * Paths left out of the sync by an ignore rule. A count, not a list: these are
+	 * the one outcome the user asked for, and at the vault root there can be
+	 * thousands of them — naming each would bury the skips that need acting on.
+	 */
+	ignored: number;
 }
 
 /**
@@ -95,18 +101,98 @@ const mimeOf = (path: string) =>
 	MIME[path.split('.').pop()?.toLowerCase() ?? ''] ?? 'application/octet-stream';
 
 /**
+ * The synced folder as the prefix every path below it is built from: `Pod/` for a
+ * folder, and the empty string for the whole vault, which is what `/` in the box
+ * means. The root has to be an empty prefix rather than a slash — paths are joined
+ * by concatenation, and `/note.md` is not a vault path.
+ *
+ * An unset folder is `''` in the settings and must never be handed here: the pod is
+ * not configured, and reading that as the root would sync the entire vault into it.
+ * Every caller checks `pod.folder` for truth first.
+ */
+export function podPrefix(folder: string): string {
+	const f = normalizePath(folder);
+	return !f || f === '/' || f === '.' ? '' : `${f}/`;
+}
+
+const RE_SPECIAL = /[.+^${}()|[\]\\]/g;
+
+/**
+ * One ignore line to a test, in the shape people already know from `.gitignore`:
+ * `Attachments/` for a folder, `*.png` for a kind of file, `Pod/Media/` for one
+ * exact place. A line containing a slash names a path from the vault root; a line
+ * without one names a file or folder wherever it sits. Matching is case-insensitive,
+ * since two vault paths differing only in case are a mistake, not two files.
+ *
+ * Left out until someone asks: `!` negation, `**`, and escaped metacharacters.
+ */
+function toRegExp(line: string): RegExp | null {
+	const trimmed = line.trim();
+	if (!trimmed || trimmed.startsWith('#')) return null;
+	const p = trimmed.replace(/^\/+|\/+$/g, '');
+	if (!p) return null;
+	const glob = p
+		.replace(RE_SPECIAL, '\\$&')
+		.replace(/\*/g, '[^/]*')
+		.replace(/\?/g, '[^/]');
+	// The tail is what makes a pattern name a folder and everything under it as
+	// readily as a single file; the head is what makes a bare name match at any depth.
+	return new RegExp(`^${p.includes('/') ? '' : '(?:.*/)?'}${glob}(?:/|$)`, 'i');
+}
+
+/**
+ * Paths that are not part of any pod — not pushed, not pulled, not read as missing.
+ * Two rules, and the first is not a setting:
+ *
+ *  - Anything under a dot-folder inside the synced folder. That is where Obsidian
+ *    keeps the vault's own configuration, this plugin's `data.json` among it, and
+ *    the pod credentials in that. Syncing the vault root must not be able to publish
+ *    them, and an ignore list the user has to remember to write is not that promise.
+ *    Obsidian's index leaves dot-folders out of `getFiles()` today; this does not
+ *    depend on it continuing to.
+ *  - The user's own patterns, matched against the full vault path — what the file
+ *    explorer shows, so a pattern means what it looks like it means.
+ *
+ * The prefix is passed per call rather than baked in: one matcher serves every pod,
+ * and only the part of the path below the pod's own folder is its business.
+ *
+ * Defaulted rather than required: settings saved before this existed have no list,
+ * and a missing key must not cost a container. Reading one straight out of stored
+ * data is what makes that a live possibility rather than a hypothetical.
+ */
+export function ignoreMatcher(
+	patterns: string[] = [],
+): (path: string, prefix: string) => boolean {
+	const rules = patterns
+		.map(toRegExp)
+		.filter((r): r is RegExp => r !== null);
+	return (path, prefix) =>
+		path
+			.slice(prefix.length)
+			.split('/')
+			.some((segment) => segment.startsWith('.')) ||
+		rules.some((re) => re.test(path));
+}
+
+/**
  * Whether a vault event should schedule a sync. Kept separate from the timer
  * plumbing so the rules stay testable: only files inside the synced folder count,
- * conflict copies are local scratch, and the plugin's own writes must not
- * retrigger it while a run is in flight.
+ * ignored files are not the pod's business, conflict copies are local scratch, and
+ * the plugin's own writes must not retrigger it while a run is in flight.
+ *
+ * The ignore test matters most at the vault root, where `.obsidian/workspace.json`
+ * is rewritten constantly and would otherwise keep a sync permanently 10s away.
  */
 export function isSyncTrigger(
 	path: string,
 	folder: string,
 	busy: boolean,
+	ignored?: (path: string, prefix: string) => boolean,
 ): boolean {
 	if (busy || !folder) return false;
-	if (!path.startsWith(`${folder}/`)) return false;
+	const prefix = podPrefix(folder);
+	if (!path.startsWith(prefix)) return false;
+	if (ignored?.(path, prefix)) return false;
 	return !CONFLICT_COPY.test(path);
 }
 
@@ -121,12 +207,14 @@ export function folderClash(
 	index: number,
 	folder: string,
 ): string | null {
-	const f = normalizePath(folder);
-	if (!f || f === '/') return null;
+	if (!folder.trim()) return null;
+	const f = podPrefix(folder);
 	for (const [i, pod] of pods.entries()) {
 		if (i === index || !pod.folder) continue;
-		const other = normalizePath(pod.folder);
-		if (f === other) return other;
+		// Compared as prefixes so the vault root collides with itself however it was
+		// typed. Two pods over one folder is the one case that has no innermost owner,
+		// and at the root it is also the case that mirrors the whole vault twice.
+		if (f === podPrefix(pod.folder)) return pod.folder;
 	}
 	return null;
 }
@@ -137,14 +225,19 @@ export function folderClash(
  * without this the outer pod would treat them as its own and push them into its own
  * container. A folder is owned as soon as it is set, even on a row with no URL yet —
  * a half-filled row must not leave its notes to the pod above it.
+ *
+ * A pod on the vault root has an empty prefix, so every other configured folder sits
+ * inside it. That is the whole point of syncing the root, and it is also what stops
+ * the root pod from swallowing the pods that were already there.
  */
 export function nestedFolders(pods: PodConfig[], folder: string): string[] {
-	const f = normalizePath(folder);
-	if (!f || f === '/') return [];
+	// `''` is a row with no folder yet and `/` is the vault root, and the two must not
+	// be read as each other: one claims nothing, the other claims everything.
+	if (!folder.trim()) return [];
+	const f = podPrefix(folder);
 	return pods
-		.map((p) => normalizePath(p.folder ?? ''))
-		.filter((other) => other.startsWith(`${f}/`))
-		.map((other) => `${other}/`);
+		.map((p) => (p.folder ? podPrefix(p.folder) : ''))
+		.filter((other) => other !== '' && other !== f && other.startsWith(f));
 }
 
 /**
@@ -159,12 +252,14 @@ export function ownedBy(
 	folder: string,
 	remaining: PodConfig[],
 ): string[] {
-	const base = normalizePath(folder);
-	if (!base || base === '/') return [];
-	const nested = nestedFolders(remaining, base);
+	// An unset folder owns nothing. Read as the root it would own everything, and
+	// removing a half-filled row would drop every other pod's history with it.
+	if (!folder.trim()) return [];
+	const prefix = podPrefix(folder);
+	const nested = nestedFolders(remaining, folder);
 	return Object.keys(state).filter(
 		(path) =>
-			path.startsWith(`${base}/`) && !nested.some((n) => path.startsWith(n)),
+			path.startsWith(prefix) && !nested.some((n) => path.startsWith(n)),
 	);
 }
 
@@ -338,7 +433,7 @@ export function deletedLocally(
 }
 
 /**
- * Synced paths under `base` whose recorded resource does not live in `root`. Only
+ * Synced paths under `folder` whose recorded resource does not live in `root`. Only
  * pointing a pod at a different container leaves these behind, and each one then
  * describes the pod that used to be mirrored here rather than the one that is.
  *
@@ -349,13 +444,14 @@ export function deletedLocally(
  */
 export function staleBindings(
 	state: SyncState,
-	base: string,
+	folder: string,
 	root: string,
 	claimed: (path: string) => boolean,
 ): string[] {
+	const prefix = podPrefix(folder);
 	return Object.keys(state).filter(
 		(path) =>
-			path.startsWith(`${base}/`) &&
+			path.startsWith(prefix) &&
 			// A pod filed inside this folder keeps its own entries, and they name its
 			// own container. To this pod every one of them looks stale, and acting on
 			// that would drop another pod's history and trash the notes behind it.
@@ -390,6 +486,7 @@ export async function runSync(plugin: SolidSyncPlugin): Promise<string> {
 		deletedRemote: 0,
 		conflicts: [],
 		skipped: [],
+		ignored: 0,
 	};
 
 	// A half-filled row is easy to leave behind after selecting Add pod, and
@@ -425,12 +522,27 @@ async function syncPod(
 ): Promise<void> {
 	const { pushDeletions, maxFileMB } = plugin.settings;
 	const root = pod.url.endsWith('/') ? pod.url : `${pod.url}/`;
-	const base = normalizePath(pod.folder);
+	const prefix = podPrefix(pod.folder);
 
 	// Paths a pod filed inside this one owns. Left out of both sides entirely: not
 	// pulled, not pushed, not deleted, and not read as missing.
-	const nested = nestedFolders(plugin.settings.pods, base);
+	const nested = nestedFolders(plugin.settings.pods, pod.folder);
 	const claimed = (path: string) => nested.some((n) => path.startsWith(n));
+
+	// The same treatment, for the paths the user has said are not the pod's business.
+	// Counted rather than listed, and counted once per path however many sides it
+	// turned up on — a rule that matches a thousand attachments is working, not
+	// reporting a thousand problems.
+	const ignore = ignoreMatcher(plugin.settings.ignore);
+	const ignored = new Set<string>();
+	const isIgnored = (path: string) => {
+		if (!ignore(path, prefix)) return false;
+		if (!ignored.has(path)) {
+			ignored.add(path);
+			report.ignored++;
+		}
+		return true;
+	};
 
 	const vault = plugin.app.vault;
 	const state: SyncState = plugin.state;
@@ -446,7 +558,7 @@ async function syncPod(
 	// the name. Edited since, it is the user's, and stays — as a note this folder's
 	// pod does not have yet.
 	const carriedOver = new Set<string>();
-	for (const path of staleBindings(state, base, root, claimed)) {
+	for (const path of staleBindings(state, pod.folder, root, claimed)) {
 		const file = vault.getFileByPath(path);
 		if (file && file.stat.mtime === state[path]?.local) carriedOver.add(path);
 		delete state[path];
@@ -484,7 +596,7 @@ async function syncPod(
 		// A note must end in .md or the vault will not see it as a note — and an
 		// invisible note reads as "deleted locally" on the next sync. Attachments
 		// keep their own name, which is what the embed link in a note points at.
-		const path = `${base}/${kind === 'raw' || rel.endsWith('.md') ? rel : `${rel}.md`}`;
+		const path = `${prefix}${kind === 'raw' || rel.endsWith('.md') ? rel : `${rel}.md`}`;
 		// This pod has a container of its own where another pod's folder sits. The
 		// innermost folder owns it, and a resource dropped without a word would be
 		// indistinguishable from one the pod never had.
@@ -492,6 +604,9 @@ async function syncPod(
 			report.skipped.push(`${r.url} (${path} belongs to another pod's folder)`);
 			continue;
 		}
+		// Ignored on the pod side too: "not part of the pod" has to mean the resource
+		// is not pulled either, or an ignore rule would only ever be half a rule.
+		if (isIgnored(path)) continue;
 		if (tooBig(path, r.size, 'on pod')) continue;
 		const clash = remote.get(path);
 		if (clash) {
@@ -504,8 +619,9 @@ async function syncPod(
 	const local = new Map<string, TFile>();
 	for (const file of vault.getFiles()) {
 		if (
-			file.path.startsWith(`${base}/`) &&
+			file.path.startsWith(prefix) &&
 			!claimed(file.path) &&
+			!isIgnored(file.path) &&
 			!carriedOver.has(file.path) &&
 			!CONFLICT_COPY.test(file.path) &&
 			!tooBig(file.path, file.stat.size, 'in the vault')
@@ -530,8 +646,15 @@ async function syncPod(
 	// mirror that onto the pod — one wrong sync should not be able to empty it.
 	// Counted within this pod's folder only: measured against every pod's state, a
 	// wiped folder would stop tripping the guard as soon as other pods were added.
+	//
+	// An ignore rule added after a path was synced leaves history naming it, and that
+	// entry is deliberately not filtered out here. With the path in neither map it
+	// reaches the last branch below, which forgets it — the wanted outcome, and the
+	// safe one, since the branch that deletes a pod copy needs the resource in
+	// `remote` and an ignored path never is. Removing the rule later then rediscovers
+	// both copies rather than acting on a record of them from before it existed.
 	const known = Object.keys(state).filter(
-		(p) => p.startsWith(`${base}/`) && !claimed(p),
+		(p) => p.startsWith(prefix) && !claimed(p),
 	);
 	const missingLocally = known.filter(
 		(p) => remote.has(p) && !local.has(p) && !oversize.has(p),
@@ -647,7 +770,7 @@ async function syncPod(
 					`${path} (new note, ${authenticated ? 'no write access' : 'no credentials'})`,
 				);
 			} else {
-				const url = root + encodeURI(path.slice(base.length + 1));
+				const url = root + encodeURI(path.slice(prefix.length));
 				if (await push(fetcher, vault, f, url, state)) {
 					pushedPaths.push(path);
 					report.pushed++;
@@ -815,6 +938,7 @@ function summarize(report: Report, authenticated: boolean): string {
 		);
 	}
 	if (report.skipped.length) parts.push(`${report.skipped.length} skipped`);
+	if (report.ignored) parts.push(`${report.ignored} ignored`);
 	if (!authenticated) parts.push('read-only (no credentials)');
 	return parts.join(', ');
 }

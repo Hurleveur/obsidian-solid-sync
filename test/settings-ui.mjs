@@ -41,6 +41,7 @@ assert.deepEqual(
 		'Sync on startup',
 		'Sync after changes',
 		'Maximum file size (MB)',
+		'Ignore',
 		'Deleted notes',
 		'Delete on pod when a note is deleted',
 		'Restore deleted notes',

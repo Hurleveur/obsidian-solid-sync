@@ -52,7 +52,9 @@ Put both in `<vault>/.obsidian/plugins/solid-sync/`, then refresh the list under
 ## Setup
 
 1. **Settings → Solid Pod Sync → Add pod**, then set the container URL
-   (`https://pod.example.eu/you/`) and the vault folder it mirrors into.
+   (`https://pod.example.eu/you/`) and the vault folder it mirrors into. `/` is the
+   whole vault — see [The whole vault as one pod](#the-whole-vault-as-one-pod), and
+   set **Ignore** first if you go that way.
 2. Public pods work immediately, read-only. For your own pod, select **Log in** and
    enter your pod account email and password. This mints a client-credentials token
    through the pod's account API; the password is used once and never stored.
@@ -123,6 +125,45 @@ it.
 Only giving two pods the **same** folder is refused: with no innermost pod, neither
 could own a note in it.
 
+### The whole vault as one pod
+
+Enter `/` as the folder and the pod mirrors the vault itself rather than a folder in
+it. Everything above still holds: a pod filed at `Solid/` keeps its own notes, and
+the root pod stops at that boundary like any other.
+
+Do set **Ignore** before doing this. A vault usually contains a good deal that has no
+business in a pod — attachments, exports, a plugin's scratch folder — and at the root
+all of it is in scope at once.
+
+The vault's own dot-folders are never in scope, whatever the ignore list says. That
+is where Obsidian keeps its configuration, this plugin's `data.json` among it, and
+your pod credentials are in that file.
+
+### Ignoring files
+
+**Settings → Solid Pod Sync → Ignore** takes one pattern per line, in the shape
+`.gitignore` uses:
+
+| Pattern | Matches |
+| --- | --- |
+| `Attachments/` | a folder of that name and everything in it, wherever it sits |
+| `*.png` | that kind of file, at any depth |
+| `Notes/Media/` | that one place, counted from the vault root |
+| `# a note to yourself` | nothing; a line starting with `#` is a comment |
+
+A pattern containing a slash names a path from the vault root. One without names a
+file or folder wherever it turns up. Matching ignores case. `!` negation, `**` and
+escaped metacharacters are not supported.
+
+An ignored path is not part of any pod, in both directions: never uploaded, never
+pulled down, and never read as a note you deleted — so adding a rule deletes nothing,
+on either side. The two copies simply stop being compared. Remove the rule and the
+next run picks the path up again from scratch.
+
+The list applies to every pod. Ignored files are counted in the summary rather than
+listed under **Status**: a rule doing its job is not something to act on, and at the
+vault root there can be thousands of them.
+
 ## When it syncs
 
 | Trigger | Default |
@@ -179,6 +220,7 @@ no clock comparison between machines is needed. Assumes one editor at a time.
 | Pod refuses the write | Reported as skipped, that pod's copy left alone, the run carries on |
 | Vault refuses the name | A pod name is not a vault name — `:` and `?` are ordinary in a URL and illegal in an Obsidian file name. That one resource is reported as skipped and retried on the next run; every other resource in the container syncs normally |
 | Pod pointed at another container | The folder's sync history named the old container, so it is forgotten and the new one is pulled in full. Files the old container left and you never touched are its copies: replaced where the new container has that name, moved to trash where it does not. Anything you edited is yours and is kept |
+| Matches an ignore pattern | Left alone on both sides — not pushed, not pulled, not deleted, not read as missing. Counted in the summary rather than listed as skipped |
 
 ### Why a file was skipped
 
@@ -188,9 +230,10 @@ count, one line per file: no read access, over the size limit, a local edit the 
 refused, a name another resource already took, a name the vault itself will not
 accept. A healthy run skips nothing and the list is not shown.
 
-Every resource a run does not sync is named there. A line naming a *folder* rather
-than a file is the exception: it means that pod could not be reached at all, and its
-container was left untouched.
+Every resource a run does not sync is named there, bar the ones an ignore rule
+excluded — those are your own instruction, and the summary carries their count. A
+line naming a *folder* rather than a file is the other exception: it means that pod
+could not be reached at all, and its container was left untouched.
 
 ### Restore deleted notes
 
@@ -337,14 +380,24 @@ seen is written rather than throwing:
 POD_URL=… POD_ID=… POD_SECRET=… node test/unwritable.mjs
 ```
 
+Ignore rules through a whole sync, with the vault root as the folder — writes `ig-*`
+resources. Checks that an ignored file is neither pushed nor pulled, that adding a
+rule for a path already synced deletes nothing on either side, and that the vault's
+own dot-folders stay out of the pod:
+
+```bash
+POD_URL=… POD_ID=… POD_SECRET=… node test/ignore-sync.mjs
+```
+
 Trigger rules, access parsing, settings migration, content comparison, the restore
-list, what a removed pod takes with it, and the settings tab's section order and
-confirm dialogs, no network needed:
+list, ignore-pattern shapes, the vault root as a folder, what a removed pod takes
+with it, and the settings tab's section order and confirm dialogs, no network needed:
 
 ```bash
 node test/trigger.mjs
 node test/access.mjs
 node test/settings-ui.mjs
+node test/ignore.mjs
 ```
 
 Both pods can be local. [Community Solid Server](https://github.com/CommunitySolidServer/CommunitySolidServer)

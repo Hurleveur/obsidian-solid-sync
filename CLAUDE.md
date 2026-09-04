@@ -13,6 +13,10 @@ is true about *this* plugin.
   `README` and `profile/`, which a bare scratch subcontainer does not have.
 - `repoint.mjs` needs two containers. Client credentials are minted per WebID, so
   use two folders inside one pod, never two pods.
+- `e2e.mjs` section 12 needs a pod you genuinely cannot write to. A local CSS root
+  sends no `WAC-Allow`, which reads as writable — leave `POD_URL_2` unset instead.
+- A suite that builds `plugin.settings` by hand is missing every key added since it
+  was written. A `runSync` that reads one straight out costs the whole container.
 - Confirm a new sync test fails with its fix removed. A repoint scenario built on an
   untouched file passes either way — the plain pull branch rewrites state on its own.
 - The stub is the *host*, not the server: it may fake what Obsidian does to us.
@@ -34,6 +38,13 @@ is true about *this* plugin.
 - Every path a run leaves alone or removes must say so — a `report.skipped` line or
   a `report.deleted*` counter. The summary string carries counts only. A skip naming
   a folder rather than a file means a whole pod was unreachable, nothing less.
+- An ignored path is the one exception: counted in `report.ignored`, never listed.
+  The skip list is what the user must act on, and a rule working is not that.
+- A pod folder is a *prefix*, `podPrefix()`: `Pod/` for a folder, `''` for the vault
+  root, which is what `/` in the box means. `''` in the settings is an unset row and
+  must never reach it — read as the root it would sync the whole vault.
+- Nothing under a dot-folder inside the synced folder ever syncs, and that is not a
+  setting: `.obsidian/plugins/solid-sync/data.json` holds the pod credentials.
 - A pod name is not a vault name: `:` `?` `*` `"` `<` `>` `|` are legal in a URL and
   rejected by Obsidian. Assume any single write can fail on a name the pod accepted.
 - `getFileByPath`/`getFiles` answer from Obsidian's index, `adapter.exists` from the

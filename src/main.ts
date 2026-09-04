@@ -4,7 +4,7 @@ import {
 	SolidSyncSettingTab,
 	type SolidSyncSettings,
 } from './settings';
-import { isSyncTrigger, runSync, type SyncState } from './sync';
+import { ignoreMatcher, isSyncTrigger, runSync, type SyncState } from './sync';
 
 /** Wait for a burst of edits to settle before syncing. */
 const CHANGE_DEBOUNCE_MS = 10_000;
@@ -69,8 +69,9 @@ export default class SolidSyncPlugin extends Plugin {
 	private scheduleSync(path: string) {
 		if (!this.settings.syncOnChange) return;
 		const busy = this.syncing || Date.now() < this.quietUntil;
+		const ignored = ignoreMatcher(this.settings.ignore);
 		const triggers = this.settings.pods.some((pod) =>
-			isSyncTrigger(path, pod.folder, busy),
+			isSyncTrigger(path, pod.folder, busy, ignored),
 		);
 		if (!triggers) return;
 		window.clearTimeout(this.pending);

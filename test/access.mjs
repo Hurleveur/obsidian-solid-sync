@@ -111,9 +111,14 @@ assert.deepEqual(
 // A pod is never inside itself, or it would own none of its own notes.
 assert.deepEqual(nestedFolders([{ url: 'https://a.example/', folder: 'Pod' }], 'Pod'), []);
 
-// Nothing is configured yet, or the pod is the whole vault.
+// Nothing is configured yet, so nothing is claimed. `/` is not this: it is the
+// whole vault, and every other pod's folder is filed inside it.
 assert.deepEqual(nestedFolders(nestedPods, ''), []);
-assert.deepEqual(nestedFolders(nestedPods, '/'), []);
+assert.deepEqual(
+	nestedFolders(nestedPods, '/'),
+	['Pod/', 'Pod/nicolas/', 'Pod/deep/nested/', 'Podx/', 'Other/'],
+	'a pod on the vault root gives up every folder another pod already has',
+);
 
 // --- state left by a pod pointed at a different container ------------------
 // Taken from a real vault: a folder was pulled from one pod, the row was then
@@ -397,6 +402,18 @@ assert.deepEqual(ownedBy(removedState, 'Other', []), ['Other/d.md']);
 // A row removed before it was ever given a folder owns nothing at all — dropping
 // every entry in the vault is the one outcome that must not be possible here.
 assert.deepEqual(ownedBy(removedState, '', []), []);
-assert.deepEqual(ownedBy(removedState, '/', []), []);
+// `/` is the opposite case and must not be confused with it: that row mirrored the
+// whole vault, so its history is the whole vault's, bar what a nested pod keeps.
+assert.deepEqual(ownedBy(removedState, '/', []), [
+	'Pod/a.md',
+	'Pod/sub/b.md',
+	'Pod/nicolas/c.md',
+	'Other/d.md',
+]);
+assert.deepEqual(ownedBy(removedState, '/', [{ url: other, folder: 'Other' }]), [
+	'Pod/a.md',
+	'Pod/sub/b.md',
+	'Pod/nicolas/c.md',
+]);
 
 console.log('access rules: all checks passed');

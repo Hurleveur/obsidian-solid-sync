@@ -22,6 +22,12 @@ export interface SolidSyncSettings {
 	syncOnChange: boolean;
 	/** Files larger than this are left alone on both sides. 0 disables the limit. */
 	maxFileMB: number;
+	/**
+	 * Vault paths no pod syncs, one `.gitignore`-flavoured pattern per entry. Applies
+	 * to every pod: a pattern names what does not belong in a pod at all, and the same
+	 * attachments folder should not need saying twice.
+	 */
+	ignore: string[];
 }
 
 export const DEFAULT_SETTINGS: SolidSyncSettings = {
@@ -33,6 +39,7 @@ export const DEFAULT_SETTINGS: SolidSyncSettings = {
 	syncOnStartup: false,
 	syncOnChange: false,
 	maxFileMB: 10,
+	ignore: [],
 };
 
 /** Settings written before pods were a list. Read once, then dropped. */
@@ -50,13 +57,11 @@ export function migrateSettings(
 	saved: Partial<SolidSyncSettings> & Legacy,
 ): SolidSyncSettings {
 	const { podUrl, folder, ...rest } = saved;
-	const settings: SolidSyncSettings = Object.assign(
-		{},
-		DEFAULT_SETTINGS,
-		rest,
-		// A saved `null` from an old build must not defeat the default.
-		rest.pods ? {} : { pods: [] },
-	);
+	const settings: SolidSyncSettings = Object.assign({}, DEFAULT_SETTINGS, rest);
+	// A saved `null` from an old build must not defeat the default, and neither must
+	// a list saved as something that is not one — both are iterated without asking.
+	if (!Array.isArray(settings.pods)) settings.pods = [];
+	if (!Array.isArray(settings.ignore)) settings.ignore = [];
 	if (podUrl && !settings.pods.length) {
 		settings.pods = [{ url: podUrl, folder: folder ?? 'Pod' }];
 		settings.issuer ||= new URL(podUrl).origin;
@@ -212,7 +217,7 @@ export class SolidSyncSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName('Pods')
 			.setDesc(
-				"Each container is mirrored into its own vault folder. Add any pod you can read — your own, a shared one, or a public one. A folder may sit inside another pod's folder: the innermost one owns its notes, and no other pod touches them.",
+				"Each container is mirrored into its own vault folder. Add any pod you can read — your own, a shared one, or a public one. A folder may sit inside another pod's folder: the innermost one owns its notes, and no other pod touches them. Use / for the whole vault, and set Ignore below before you do.",
 			)
 			.setHeading()
 			.addButton((btn) =>
@@ -264,7 +269,7 @@ export class SolidSyncSettingTab extends PluginSettingTab {
 				)
 				.addText((t) =>
 					t
-						.setPlaceholder('Vault folder')
+						.setPlaceholder('Vault folder, or / for all of it')
 						.setValue(pod.folder)
 						.onChange(async (v) => {
 							const folder = v.trim();
@@ -443,6 +448,28 @@ export class SolidSyncSettingTab extends PluginSettingTab {
 						Number.isFinite(n) && n >= 0 ? n : DEFAULT_SETTINGS.maxFileMB,
 					);
 				});
+			});
+
+		new Setting(containerEl)
+			.setName('Ignore')
+			.setDesc(
+				'One pattern per line, as in .gitignore. "Attachments/" for a folder wherever it sits, "*.png" for a kind of file, "Notes/Media/" for one exact place. Ignored files are left alone on both sides: never uploaded, never pulled, never deleted. The vault\'s own dot-folders are always ignored, whatever is written here.',
+			)
+			.addTextArea((t) => {
+				t.inputEl.rows = 4;
+				t.setPlaceholder('Attachments/\n*.png')
+					.setValue(this.plugin.settings.ignore.join('\n'))
+					// Kept as written until it is saved: trimming the box itself would
+					// eat the newline the moment it is typed.
+					.onChange((v) =>
+						this.set(
+							'ignore',
+							v
+								.split('\n')
+								.map((line) => line.trim())
+								.filter(Boolean),
+						),
+					);
 			});
 
 		new Setting(containerEl).setName('Deleted notes').setHeading();

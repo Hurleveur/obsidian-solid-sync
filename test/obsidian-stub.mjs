@@ -190,6 +190,9 @@ export class Setting {
 	addToggle(cb) {
 		return this.add('toggle', cb);
 	}
+	addTextArea(cb) {
+		return this.add('textarea', cb);
+	}
 }
 
 export class Plugin {}
