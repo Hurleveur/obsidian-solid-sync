@@ -1,7 +1,13 @@
 import { App, Modal, Notice, PluginSettingTab, Setting, setIcon } from 'obsidian';
 import type SolidSyncPlugin from './main';
 import { createClientCredentials } from './solid';
-import { deletedLocally, folderClash, ownedBy } from './sync';
+import {
+	deletedLocally,
+	folderClash,
+	ignoreMatcher,
+	ownedBy,
+	podPrefix,
+} from './sync';
 
 /** One pod container mirrored into one vault folder. */
 export interface PodConfig {
@@ -184,6 +190,26 @@ const isWebAddress = (url: string) => {
 	}
 };
 
+/**
+ * What a folder box means once it is typed, as the row's own note. `/` is the one
+ * entry that does not look like what it does — it reads as a folder name and mirrors
+ * the entire vault — so it says so, and says whether anything is being kept out of
+ * it. Returns the message and whether it is a warning.
+ */
+export function folderNote(
+	folder: string,
+	ignore: string[],
+): [string, boolean] {
+	if (!folder) return ['Saved. Without a folder this pod is not synced.', true];
+	if (podPrefix(folder) !== '') return ['Saved.', false];
+	return ignore.length
+		? ['Saved. This pod mirrors the whole vault; your ignore patterns apply.', false]
+		: [
+				'Saved. This pod mirrors the whole vault, and nothing is ignored yet — set Ignore below before you sync.',
+				true,
+			];
+}
+
 const accessText = (access: PodConfig['access']) =>
 	access === 'write'
 		? 'Read and write.'
@@ -205,6 +231,38 @@ export class SolidSyncSettingTab extends PluginSettingTab {
 	) {
 		this.plugin.settings[key] = value;
 		await this.plugin.saveSettings();
+	}
+
+	/**
+	 * What the ignore list costs right now, counted against the vault as it is. Typed
+	 * patterns otherwise say nothing until a sync has run, and whether `*.png` really
+	 * catches your attachments is exactly what you want to know before that rather
+	 * than from the summary afterwards.
+	 *
+	 * ponytail: re-counted on every keystroke, over every file in every pod folder.
+	 * A few regexes across a few thousand paths, so it does not need debouncing until
+	 * someone's vault says otherwise.
+	 */
+	private ignoreCount(): string {
+		const { ignore, pods } = this.plugin.settings;
+		const rules = ignore.length === 1 ? '1 pattern' : `${ignore.length} patterns`;
+		// Rendered without a vault by the settings tests, and by nothing else.
+		const files = this.plugin.app.vault?.getFiles?.();
+		if (!files) return `${rules}.`;
+		const match = ignoreMatcher(ignore);
+		const inScope = new Set<string>();
+		const left = new Set<string>();
+		for (const pod of pods) {
+			if (!pod.folder) continue;
+			const prefix = podPrefix(pod.folder);
+			for (const file of files) {
+				if (!file.path.startsWith(prefix)) continue;
+				inScope.add(file.path);
+				if (match(file.path, prefix)) left.add(file.path);
+			}
+		}
+		if (!inScope.size) return `${rules}. No pod folder to apply them to yet.`;
+		return `${rules}. ${left.size} of ${inScope.size} files in your pod folders are left out.`;
 	}
 
 	/**
@@ -285,7 +343,7 @@ export class SolidSyncSettingTab extends PluginSettingTab {
 							}
 							pod.folder = folder;
 							await this.plugin.saveSettings();
-							show('Saved.', false);
+							show(...folderNote(folder, this.plugin.settings.ignore));
 						}),
 				)
 				.addExtraButton((btn) =>
@@ -450,27 +508,30 @@ export class SolidSyncSettingTab extends PluginSettingTab {
 				});
 			});
 
-		new Setting(containerEl)
+		const ignoreRow = new Setting(containerEl)
 			.setName('Ignore')
 			.setDesc(
-				'One pattern per line, as in .gitignore. "Attachments/" for a folder wherever it sits, "*.png" for a kind of file, "Notes/Media/" for one exact place. Ignored files are left alone on both sides: never uploaded, never pulled, never deleted. The vault\'s own dot-folders are always ignored, whatever is written here.',
-			)
-			.addTextArea((t) => {
-				t.inputEl.rows = 4;
-				t.setPlaceholder('Attachments/\n*.png')
-					.setValue(this.plugin.settings.ignore.join('\n'))
-					// Kept as written until it is saved: trimming the box itself would
-					// eat the newline the moment it is typed.
-					.onChange((v) =>
-						this.set(
-							'ignore',
-							v
-								.split('\n')
-								.map((line) => line.trim())
-								.filter(Boolean),
-						),
+				'One pattern per line, as in .gitignore: "Attachments/" for a folder wherever it sits, "*.png" for a kind of file, "Notes/Media/" for one exact place. A match is left alone on both sides — never uploaded, never pulled, never deleted. The vault\'s own dot-folders are always ignored, whatever is written here.',
+			);
+		const ignoreNote = ignoreRow.descEl.createDiv();
+		ignoreNote.setText(this.ignoreCount());
+		ignoreRow.addTextArea((t) => {
+			t.inputEl.rows = 4;
+			t.setPlaceholder('Attachments/\n*.png')
+				.setValue(this.plugin.settings.ignore.join('\n'))
+				// Kept as written until it is saved: trimming the box itself would
+				// eat the newline the moment it is typed.
+				.onChange(async (v) => {
+					await this.set(
+						'ignore',
+						v
+							.split('\n')
+							.map((line) => line.trim())
+							.filter(Boolean),
 					);
-			});
+					ignoreNote.setText(this.ignoreCount());
+				});
+		});
 
 		new Setting(containerEl).setName('Deleted notes').setHeading();
 

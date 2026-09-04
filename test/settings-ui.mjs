@@ -5,10 +5,39 @@
  *   node test/settings-ui.mjs
  */
 import assert from 'node:assert/strict';
-import { migrateSettings, Modal, SolidSyncSettingTab } from './sync.bundle.mjs';
+import {
+	folderNote,
+	migrateSettings,
+	Modal,
+	SolidSyncSettingTab,
+} from './sync.bundle.mjs';
+
+// --- what a folder box says once it is typed --------------------------------
+// `/` is the one entry that does not look like what it does: it reads as a folder
+// name and mirrors the whole vault. Saying only "Saved." is how someone syncs their
+// entire vault, attachments and all, without being told that is what they asked for.
+assert.deepEqual(folderNote('Pod', []), ['Saved.', false]);
+assert.equal(folderNote('/', [])[1], true, 'the root with nothing ignored warns');
+assert.match(folderNote('/', [])[0], /whole vault/);
+assert.match(folderNote('/', [])[0], /nothing is ignored yet/);
+assert.equal(
+	folderNote('/', ['*.png'])[1],
+	false,
+	'with patterns set it states the fact without warning',
+);
+assert.match(folderNote('/', ['*.png'])[0], /whole vault/);
+assert.equal(folderNote('', [])[1], true, 'no folder means this pod never syncs');
+
+const files = [
+	{ path: 'Pod/note.md' },
+	{ path: 'Pod/Attachments/logo.png' },
+	{ path: 'Pod/shot.PNG' },
+	{ path: 'Work/task.md' },
+	{ path: 'Elsewhere/outside.md' },
+];
 
 const plugin = {
-	app: {},
+	app: { vault: { getFiles: () => files } },
 	// Two synced notes, one under each pod's folder: removing a pod has to take
 	// its history with it and leave the other pod's alone.
 	state: { 'Pod/kept.md': {}, 'Work/kept.md': {} },
@@ -53,6 +82,27 @@ assert.deepEqual(
 		.map((s) => s.name),
 	['Pods', 'Syncing', 'Deleted notes'],
 );
+
+// --- the ignore box says what it currently catches ---------------------------
+// Counted against the vault as it stands, so a pattern that matches nothing shows
+// that while you are typing it rather than in the summary of a run you already made.
+const ignoreRow = () => rows().find((s) => s.name === 'Ignore');
+const ignoreNote = () => ignoreRow().descEl.children.at(-1).text;
+assert.match(ignoreNote(), /^0 patterns\. 0 of 4 files/, 'two pod folders, four files');
+
+const ignoreBox = () =>
+	ignoreRow().components.find((c) => c.kind === 'textarea');
+await ignoreBox().changed('Attachments/\n*.png');
+assert.deepEqual(plugin.settings.ignore, ['Attachments/', '*.png']);
+assert.match(
+	ignoreNote(),
+	/^2 patterns\. 2 of 4 files/,
+	'the png and the folder go; case does not matter, and Elsewhere is in no pod',
+);
+
+await ignoreBox().changed('  \n\n# only a comment\n');
+assert.deepEqual(plugin.settings.ignore, ['# only a comment'], 'blank lines dropped');
+assert.match(ignoreNote(), /^1 pattern\. 0 of 4 files/, 'a comment matches nothing');
 
 // The trash icon only asks — the pod goes when the confirm is accepted.
 const trash = (name) =>

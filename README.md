@@ -129,7 +129,9 @@ could own a note in it.
 
 Enter `/` as the folder and the pod mirrors the vault itself rather than a folder in
 it. Everything above still holds: a pod filed at `Solid/` keeps its own notes, and
-the root pod stops at that boundary like any other.
+the root pod stops at that boundary like any other. The row says so as you type it,
+and warns while nothing is ignored yet — `/` is the one entry that reads like a
+folder name and means the whole vault.
 
 Do set **Ignore** before doing this. A vault usually contains a good deal that has no
 business in a pod — attachments, exports, a plugin's scratch folder — and at the root
@@ -159,6 +161,10 @@ An ignored path is not part of any pod, in both directions: never uploaded, neve
 pulled down, and never read as a note you deleted — so adding a rule deletes nothing,
 on either side. The two copies simply stop being compared. Remove the rule and the
 next run picks the path up again from scratch.
+
+The box counts as you type — how many patterns are set, and how many of the files
+currently in your pod folders they leave out. Whether `*.png` really catches your
+attachments is worth knowing before the sync rather than from its summary afterwards.
 
 The list applies to every pod. Ignored files are counted in the summary rather than
 listed under **Status**: a rule doing its job is not something to act on, and at the
