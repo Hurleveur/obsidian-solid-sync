@@ -386,6 +386,14 @@ seen is written rather than throwing:
 POD_URL=… POD_ID=… POD_SECRET=… node test/unwritable.mjs
 ```
 
+New notes whose names hold URL-reserved characters (`,` `;` `&` `=` `+` `$` `@`) —
+writes `nm-*` resources. Checks that each one is pushed rather than reported as
+"no write access", lands under its own name, and that the next run settles:
+
+```bash
+POD_URL=… POD_ID=… POD_SECRET=… node test/names.mjs
+```
+
 Ignore rules through a whole sync, with the vault root as the folder — writes `ig-*`
 resources. Checks that an ignored file is neither pushed nor pulled, that adding a
 rule for a path already synced deletes nothing on either side, and that the vault's

@@ -770,7 +770,12 @@ async function syncPod(
 					`${path} (new note, ${authenticated ? 'no write access' : 'no credentials'})`,
 				);
 			} else {
-				const url = root + encodeURI(path.slice(prefix.length));
+				// Per segment, not `encodeURI`: that leaves `,` `;` `&` `=` `+` `$` `@`
+				// raw, the server escapes them, and the DPoP proof signed over the raw
+				// URL stops matching — a 401 that reads as "no write access".
+				const url =
+					root +
+					path.slice(prefix.length).split('/').map(encodeURIComponent).join('/');
 				if (await push(fetcher, vault, f, url, state)) {
 					pushedPaths.push(path);
 					report.pushed++;
