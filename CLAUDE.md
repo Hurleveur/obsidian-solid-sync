@@ -22,6 +22,8 @@ is true about *this* plugin.
 - The stub is the *host*, not the server: it may fake what Obsidian does to us.
   `vault.unindexed` holds paths on disk the index denies, and `create` throws on an
   existing path, both as the real vault behaves.
+- The stub's `requestUrl` has no HTTP cache and its `TFile.stat` is a snapshot; real
+  Obsidian has both. `test/conflict.mjs` wraps `fetch` and `vault.file` to model them.
 - A bug only reproducible in real Obsidian is still reproducible here — model the API
   difference in the stub rather than concluding the plugin logic is clean.
 
@@ -33,6 +35,9 @@ is true about *this* plugin.
   nested pod's entries name its own container and are not this pod's to drop.
 - Record the local mtime `writeFile` returns, never one read off a `TFile` captured
   before the write; the pre-write stat makes the pull read as a local edit.
+- Every GET a sync decision reads carries `NO_CACHE` — desktop `requestUrl` is cached,
+  and a pre-push listing reads a note just pushed as deleted on the pod.
+- Take a pushed file's mtime before reading its body; `TFile.stat` is live.
 - Nothing in the per-path loop may throw out of it. One resource failing must cost
   that resource only — it used to end the container, silently, on every later run.
 - Every path a run leaves alone or removes must say so — a `report.skipped` line or

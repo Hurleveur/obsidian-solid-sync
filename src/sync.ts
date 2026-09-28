@@ -18,6 +18,7 @@ import {
 	anonymousFetch,
 	canWriteFrom,
 	createFetcher,
+	NO_CACHE,
 	walk,
 	type Fetcher,
 	type PodResource,
@@ -27,6 +28,14 @@ export interface FileState {
 	url: string;
 	pod: string;
 	local: number;
+	/**
+	 * SHA-256 of the resource's content as last synced (pushed or pulled), hex.
+	 * A backstop against a stale server timestamp: if the pod's current bytes
+	 * still hash to this, nothing really changed there, whatever `modified`
+	 * says. Absent on state written before this existed — treated as "unknown",
+	 * never as "no change".
+	 */
+	hash?: string;
 }
 
 export type SyncState = Record<string, FileState>;
@@ -403,6 +412,15 @@ async function writeFile(
 	);
 }
 
+/** SHA-256 hex digest, of raw pod bytes — Web Crypto only, no dependency. */
+async function sha256Hex(data: string | ArrayBuffer): Promise<string> {
+	const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
+	const digest = await crypto.subtle.digest('SHA-256', bytes);
+	return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join(
+		'',
+	);
+}
+
 /**
  * Both sides changed since the last sync — but only their timestamps are known to
  * differ, and a re-save with no edit or a pod re-serialising a resource moves a
@@ -686,48 +704,18 @@ async function syncPod(
 		if (entry && r && f) {
 			const podChanged = !prev || prev.pod !== r.modified;
 			const localChanged = !prev || prev.local !== f.stat.mtime;
-			if (podChanged && localChanged) {
-				const podCopy = await readRemote(fetcher, r, entry.kind);
-				if (podCopy === null) {
-					report.skipped.push(`${path} (no read access)`);
-					return;
-				}
-				let local = f.stat.mtime;
-				if (!(await matchesLocal(vault, f, podCopy))) {
-					// What we add to present a resource — the fence, the read-only
-					// property — is ours, not the pod's, so a change in it is not a
-					// change to the resource. Compare what the pod actually holds and
-					// refresh our own presentation in place when that is all that moved,
-					// rather than announcing a conflict against ourselves.
-					const mine = podText(entry.kind, await vault.read(f));
-					const theirs =
-						typeof podCopy === 'string' ? podText(entry.kind, podCopy) : null;
-					if (mine !== null && mine === theirs) {
-						local = await writeFile(vault, path, podCopy);
-					} else {
-						// Named after the pod revision, so repeated syncs refresh one copy
-						// instead of breeding a new file every run.
-						await writeFile(vault, conflictPath(path, r.modified), podCopy);
-						report.conflicts.push(path);
-					}
-				}
-				// Mark each side as seen whether or not a copy was written. The note
-				// keeps its local text, the pod keeps its own, and whichever the user
-				// edits next wins normally.
-				state[path] = {
-					url: r.url,
-					pod: r.modified,
-					local,
-				};
-			} else if (podChanged) {
-				await pull(vault, fetcher, entry, path, state, report);
-			} else if (localChanged) {
-				// Gated on `authenticated`, not `writable`, and not on the resource's
-				// kind: writing an existing resource — RDF or not — needs permission on
-				// that resource, which a pod can grant without granting the container,
-				// or without the container saying so at all. What we are wrapping never
-				// decides this, only the pod's own answer does. The cost of being wrong
-				// is one refused PUT, once per edit.
+
+			// Gated on `authenticated`, not `writable`, and not on the resource's
+			// kind: writing an existing resource — RDF or not — needs permission on
+			// that resource, which a pod can grant without granting the container,
+			// or without the container saying so at all. What we are wrapping never
+			// decides this, only the pod's own answer does. The cost of being wrong
+			// is one refused PUT, once per edit.
+			//
+			// Pulled out so the hash backstop below can fall into the same push as
+			// an ordinary local-only edit, instead of a second copy of it.
+			const pushLocalEdit = async () => {
+				if (!prev) return;
 				const wrapped =
 					entry.kind === 'wrapped'
 						? unwrapNonMarkdown(await vault.read(f))
@@ -759,6 +747,57 @@ async function syncPod(
 						report.skipped.push(`${path} (local edit, PUT refused: ${status})`);
 					}
 				}
+			};
+
+			if (podChanged && localChanged) {
+				const remote = await readRemote(fetcher, r, entry.kind);
+				if (remote === null) {
+					report.skipped.push(`${path} (no read access)`);
+					return;
+				}
+				let local = f.stat.mtime;
+				if (!(await matchesLocal(vault, f, remote.content))) {
+					// What we add to present a resource — the fence, the read-only
+					// property — is ours, not the pod's, so a change in it is not a
+					// change to the resource. Compare what the pod actually holds and
+					// refresh our own presentation in place when that is all that moved,
+					// rather than announcing a conflict against ourselves.
+					const mine = podText(entry.kind, await vault.read(f));
+					const theirs =
+						typeof remote.content === 'string'
+							? podText(entry.kind, remote.content)
+							: null;
+					if (mine !== null && mine === theirs) {
+						local = await writeFile(vault, path, remote.content);
+					} else if (prev && prev.hash && prev.hash === remote.hash) {
+						// The pod's bytes still hash to what we last synced, so despite
+						// the real-looking byte difference above, the pod has not
+						// actually moved — only `modified` looked new (a cached listing,
+						// most often). What differs is our own edit, not a second one
+						// from the pod, so push it rather than manufacturing a conflict
+						// against our own last upload.
+						await pushLocalEdit();
+						return;
+					} else {
+						// Named after the pod revision, so repeated syncs refresh one copy
+						// instead of breeding a new file every run.
+						await writeFile(vault, conflictPath(path, r.modified), remote.content);
+						report.conflicts.push(path);
+					}
+				}
+				// Mark each side as seen whether or not a copy was written. The note
+				// keeps its local text, the pod keeps its own, and whichever the user
+				// edits next wins normally.
+				state[path] = {
+					url: r.url,
+					pod: r.modified,
+					local,
+					hash: remote.hash,
+				};
+			} else if (podChanged) {
+				await pull(vault, fetcher, entry, path, state, report);
+			} else if (localChanged) {
+				await pushLocalEdit();
 			}
 		} else if (entry && r && !f) {
 			if (prev) {
@@ -827,18 +866,17 @@ async function syncPod(
 	}
 
 	// Pushed resources have a new server timestamp; refresh it so the next run
-	// does not read them back as remote changes.
+	// does not read them back as remote changes. `local` and `hash` are left
+	// alone — `push` already recorded them from the mtime and bytes it actually
+	// sent, and re-reading `file.stat.mtime` here would pick up an edit that
+	// landed after the PUT and mark it synced without ever pushing it.
 	if (pushedPaths.length) {
 		const fresh = new Map(
 			(await walk(fetcher, root)).resources.map((r) => [r.url, r]),
 		);
 		for (const path of pushedPaths) {
 			const entry = state[path];
-			const file = local.get(path);
-			if (entry && file) {
-				entry.pod = fresh.get(entry.url)?.modified ?? '';
-				entry.local = file.stat.mtime;
-			}
+			if (entry) entry.pod = fresh.get(entry.url)?.modified ?? '';
 		}
 	}
 
@@ -869,22 +907,30 @@ function markUnpushable(
 /**
  * A container can be listable while its members are not, so an unreadable
  * resource is normal on someone else's pod — report it and carry on.
+ *
+ * `hash` is taken over the raw bytes/text as they came back, before any of our
+ * own presentation (fence, read-only property) is added — the same
+ * representation `push` hashes on its way out, so the two are comparable.
  */
 async function readRemote(
 	fetcher: Fetcher,
 	r: PodResource,
 	kind: Kind,
-): Promise<string | ArrayBuffer | null> {
-	const res = await fetcher(r.url);
+): Promise<{ content: string | ArrayBuffer; hash: string } | null> {
+	const res = await fetcher(r.url, { headers: NO_CACHE });
 	if (!res.ok) return null;
-	if (kind === 'raw') return res.arrayBuffer();
+	if (kind === 'raw') {
+		const buf = await res.arrayBuffer();
+		return { content: buf, hash: await sha256Hex(buf) };
+	}
 	const body = await res.text();
+	const hash = await sha256Hex(body);
 	// This resource's own WAC-Allow, not the container's: sharing one resource out
 	// of a container you may not write is ordinary Solid, so the answer that
 	// belongs in the note is the one that came back with the note's own bytes.
 	const canWrite = canWriteFrom(res.headers);
-	if (kind !== 'note') return wrapNonMarkdown(r, body, canWrite);
-	return canWrite === false ? markReadOnly(body) : body;
+	if (kind !== 'note') return { content: wrapNonMarkdown(r, body, canWrite), hash };
+	return { content: canWrite === false ? markReadOnly(body) : body, hash };
 }
 
 async function pull(
@@ -895,15 +941,16 @@ async function pull(
 	state: SyncState,
 	report: Report,
 ) {
-	const content = await readRemote(fetcher, r, kind);
-	if (content === null) {
+	const remote = await readRemote(fetcher, r, kind);
+	if (remote === null) {
 		report.skipped.push(`${r.url} (no read access)`);
 		return;
 	}
 	state[path] = {
 		url: r.url,
 		pod: r.modified,
-		local: await writeFile(vault, path, content),
+		local: await writeFile(vault, path, remote.content),
+		hash: remote.hash,
 	};
 	report.pulled++;
 }
@@ -930,6 +977,11 @@ async function push(
 ): Promise<number | null> {
 	let type = mimeOf(file.path);
 	let body: string | ArrayBuffer;
+	// Taken before the body is read: `vault.read`/`readBinary` can straddle an
+	// edit landing mid-upload, and `file.stat` is Obsidian's live object — read
+	// after the PUT, it would already show that edit and mark it synced without
+	// ever having sent it.
+	const local = file.stat.mtime;
 	if (wrapped) {
 		// `unknown` is what the wrapper writes when the pod never declared a type,
 		// and it is not a media type — sending it back would be a malformed header.
@@ -953,7 +1005,7 @@ async function push(
 		body,
 	});
 	if (!res.ok) return res.status;
-	state[file.path] = { url, pod: '', local: file.stat.mtime };
+	state[file.path] = { url, pod: '', local, hash: await sha256Hex(body) };
 	return null;
 }
 

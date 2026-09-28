@@ -219,6 +219,7 @@ no clock comparison between machines is needed. Assumes one editor at a time.
 | Changed on pod only | Pulled |
 | Changed locally only | Pushed |
 | Changed on both, same bytes | Nothing. A re-save with no edit, or a pod re-serialising a resource, moves a timestamp without moving a byte — content is compared before anything is written. For a fenced resource only the fenced body counts, so a change to how the wrapper is written is never read as a change to the resource |
+| Changed on both, but the pod still holds what was last synced | Pushed. Only the pod's timestamp moved — each file's state keeps a hash of the bytes last sent or received, so a stale timestamp (a cached listing, most often) is never read as someone else's edit |
 | Changed on both, different bytes | Nothing is overwritten. The pod version is saved as `note (pod conflict …).md` beside yours — same for attachments, keeping their extension; edit your copy to resolve |
 | Deleted on pod | Local note moved to trash, recoverable |
 | Deleted locally | Pod copy kept, unless **Delete on pod** is enabled. It is not pulled again — see **Restore deleted notes** below |
@@ -403,6 +404,17 @@ that the next readable run carries on, and that a refused PUT reports its status
 
 ```bash
 POD_URL=… POD_ID=… POD_SECRET=… node test/unreadable.mjs
+```
+
+Conflicts against our own uploads — writes `cf-*` resources, through a fetch that
+caches like desktop Obsidian's. Checks that a listing re-read after a push is the
+pod as it is now — a stale one lacked a note just pushed, which then read as deleted
+and was trashed — that a listing stale anyway still writes no conflict copy, that a
+real edit on the pod still conflicts, and that an edit landing mid-upload is pushed
+on the next run:
+
+```bash
+POD_URL=… POD_ID=… POD_SECRET=… node test/conflict.mjs
 ```
 
 Ignore rules through a whole sync, with the vault root as the folder — writes `ig-*`

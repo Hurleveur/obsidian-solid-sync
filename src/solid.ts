@@ -296,13 +296,21 @@ export function canWriteFrom(headers: Headers): boolean | undefined {
 	return modes.split(/\s+/).includes('write');
 }
 
+/**
+ * Desktop Obsidian's `requestUrl` goes through Chromium's HTTP cache. A pod
+ * sends `Last-Modified` and no `Cache-Control`, which Chromium reads as
+ * license to serve a GET made seconds earlier — including one made before a
+ * push we just did. Every GET a sync decision depends on carries this.
+ */
+export const NO_CACHE = { 'Cache-Control': 'no-cache' };
+
 /** Lists one container's direct children, and what we may do with it. */
 export async function listContainer(
 	fetcher: Fetcher,
 	url: string,
 ): Promise<{ children: PodResource[]; canWrite: boolean | undefined }> {
 	const res = await fetcher(url, {
-		headers: { Accept: 'application/ld+json' },
+		headers: { Accept: 'application/ld+json', ...NO_CACHE },
 	});
 	if (!res.ok) {
 		throw Object.assign(new Error(`${res.status} listing ${url}`), {

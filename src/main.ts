@@ -35,6 +35,8 @@ export default class SolidSyncPlugin extends Plugin {
 	private syncing = false;
 	private pending?: number;
 	private quietUntil = 0;
+	/** A trigger-worthy edit landed while a run was already past that file. */
+	private missedDuringSync = false;
 
 	async onload() {
 		await this.loadSettings();
@@ -68,12 +70,19 @@ export default class SolidSyncPlugin extends Plugin {
 	/** Debounced sync in response to a vault change. */
 	private scheduleSync(path: string) {
 		if (!this.settings.syncOnChange) return;
-		const busy = this.syncing || Date.now() < this.quietUntil;
 		const ignored = ignoreMatcher(this.settings.ignore);
 		const triggers = this.settings.pods.some((pod) =>
-			isSyncTrigger(path, pod.folder, busy, ignored),
+			isSyncTrigger(path, pod.folder, false, ignored),
 		);
 		if (!triggers) return;
+		if (this.syncing) {
+			// The run already read this file's old state; nothing left in it will
+			// see this edit. `sync()`'s `finally` schedules one follow-up once it's
+			// done, rather than the edit being silently lost.
+			this.missedDuringSync = true;
+			return;
+		}
+		if (Date.now() < this.quietUntil) return;
 		window.clearTimeout(this.pending);
 		this.pending = window.setTimeout(
 			() => void this.sync(),
@@ -87,6 +96,7 @@ export default class SolidSyncPlugin extends Plugin {
 			return;
 		}
 		this.syncing = true;
+		this.missedDuringSync = false;
 		const notice = new Notice('Syncing pod…', 0);
 		try {
 			const result = await runSync(this);
@@ -108,6 +118,16 @@ export default class SolidSyncPlugin extends Plugin {
 			this.quietUntil = Date.now() + QUIET_AFTER_SYNC_MS;
 			await this.saveSettings();
 			window.setTimeout(() => notice.hide(), 8000);
+			if (this.missedDuringSync) {
+				// Same debounce as any other change; an unchanged file won't push
+				// again (state already carries its synced mtime and hash), so this
+				// costs nothing when nothing after the last read actually moved.
+				window.clearTimeout(this.pending);
+				this.pending = window.setTimeout(
+					() => void this.sync(),
+					CHANGE_DEBOUNCE_MS,
+				);
+			}
 		}
 	}
 
