@@ -1,6 +1,6 @@
 {
 	"name": "obsidian-solid-sync",
-	"version": "0.4.1",
+	"version": "0.4.2",
 	"description": "Sync Solid pod containers with vault folders.",
 	"main": "main.js",
 	"type": "module",
