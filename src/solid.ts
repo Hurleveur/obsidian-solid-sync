@@ -304,7 +304,11 @@ export async function listContainer(
 	const res = await fetcher(url, {
 		headers: { Accept: 'application/ld+json' },
 	});
-	if (!res.ok) throw new Error(`${res.status} listing ${url}`);
+	if (!res.ok) {
+		throw Object.assign(new Error(`${res.status} listing ${url}`), {
+			status: res.status,
+		});
+	}
 	const graph = (await res.json()) as JsonLdNode[];
 	return {
 		children: collect(graph, url, LDP_CONTAINS)
@@ -315,7 +319,8 @@ export async function listContainer(
 }
 
 /**
- * Walks a container recursively. Unreadable sub-containers are reported, not fatal.
+ * Walks a container recursively. Unreadable sub-containers are reported, not fatal,
+ * with why: an HTTP status the pod answered, or the network error that stopped it.
  * `canWrite` describes the root — permissions can differ per sub-container, but the
  * root is what a push to a new note has to go through.
  */
@@ -324,11 +329,11 @@ export async function walk(
 	root: string,
 ): Promise<{
 	resources: PodResource[];
-	unreadable: string[];
+	unreadable: { url: string; reason: string }[];
 	canWrite: boolean | undefined;
 }> {
 	const resources: PodResource[] = [];
-	const unreadable: string[] = [];
+	const unreadable: { url: string; reason: string }[] = [];
 	const queue = [root];
 	const seen = new Set(queue);
 	let canWrite: boolean | undefined;
@@ -340,8 +345,12 @@ export async function walk(
 			const listing = await listContainer(fetcher, url);
 			children = listing.children;
 			if (url === root) canWrite = listing.canWrite;
-		} catch {
-			unreadable.push(url);
+		} catch (e) {
+			const { status, message } = e as Error & { status?: number };
+			unreadable.push({
+				url,
+				reason: status ? String(status) : `network error: ${message}`,
+			});
 			continue;
 		}
 		for (const child of children) {

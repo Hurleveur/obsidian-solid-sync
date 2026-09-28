@@ -589,6 +589,18 @@ async function syncPod(
 	const writable = authenticated && canWrite !== false;
 	pod.access = writable ? 'write' : 'read';
 
+	// A container we could not list says nothing about what it holds: a dropped
+	// network mid-run, a 403 from an ACL someone tightened, or a 5xx all look like an
+	// empty folder from here. Read as empty, every note synced from it would take the
+	// "deleted on the pod" branch and be trashed. Everything under one is frozen for
+	// the run instead — not pulled, pushed, trashed or deleted, and its state kept, so
+	// the first run that can list it again picks up exactly where this one stopped.
+	// The root itself failing freezes the whole folder.
+	const frozenPrefixes = unreadable.map(
+		({ url }) => prefix + decodeURIComponent(url.slice(root.length)),
+	);
+	const frozen = (path: string) => frozenPrefixes.some((p) => path.startsWith(p));
+
 	const remote = new Map<string, { r: PodResource; kind: Kind }>();
 	for (const r of resources) {
 		const rel = decodeURIComponent(r.url.slice(root.length));
@@ -636,7 +648,8 @@ async function syncPod(
 	// a pod it never came from. Trash rather than delete: recoverable is the right
 	// answer for anything we remove on the user's behalf.
 	for (const path of carriedOver) {
-		const file = remote.has(path) ? null : vault.getFileByPath(path);
+		const file =
+			remote.has(path) || frozen(path) ? null : vault.getFileByPath(path);
 		if (!file) continue;
 		await plugin.app.fileManager.trashFile(file);
 		report.deletedLocal++;
@@ -729,14 +742,22 @@ async function syncPod(
 					report.skipped.push(
 						`${path} (local edit, fenced source block no longer parses)`,
 					);
-				} else if (
-					await push(fetcher, vault, f, prev.url, state, wrapped ?? undefined)
-				) {
-					pushedPaths.push(path);
-					report.pushed++;
 				} else {
-					markUnpushable(state, path, prev.url, f.stat.mtime, r.modified);
-					report.skipped.push(`${path} (local edit, no write access)`);
+					const status = await push(
+						fetcher,
+						vault,
+						f,
+						prev.url,
+						state,
+						wrapped ?? undefined,
+					);
+					if (status === null) {
+						pushedPaths.push(path);
+						report.pushed++;
+					} else {
+						markUnpushable(state, path, prev.url, f.stat.mtime, r.modified);
+						report.skipped.push(`${path} (local edit, PUT refused: ${status})`);
+					}
 				}
 			}
 		} else if (entry && r && !f) {
@@ -767,7 +788,7 @@ async function syncPod(
 				report.deletedLocal++;
 			} else if (!writable) {
 				report.skipped.push(
-					`${path} (new note, ${authenticated ? 'no write access' : 'no credentials'})`,
+					`${path} (new note, ${authenticated ? 'no write access per pod root' : 'no credentials'})`,
 				);
 			} else {
 				// Per segment, not `encodeURI`: that leaves `,` `;` `&` `=` `+` `$` `@`
@@ -776,11 +797,12 @@ async function syncPod(
 				const url =
 					root +
 					path.slice(prefix.length).split('/').map(encodeURIComponent).join('/');
-				if (await push(fetcher, vault, f, url, state)) {
+				const status = await push(fetcher, vault, f, url, state);
+				if (status === null) {
 					pushedPaths.push(path);
 					report.pushed++;
 				} else {
-					report.skipped.push(`${path} (new note, no write access)`);
+					report.skipped.push(`${path} (new note, PUT refused: ${status})`);
 				}
 			}
 		} else {
@@ -796,7 +818,7 @@ async function syncPod(
 	// every later run too. Nothing is recorded for the path, so the next run tries it
 	// again rather than reading it as synced.
 	for (const path of new Set([...remote.keys(), ...local.keys(), ...known])) {
-		if (oversize.has(path)) continue;
+		if (oversize.has(path) || frozen(path)) continue;
 		try {
 			await syncPath(path);
 		} catch (e) {
@@ -820,8 +842,10 @@ async function syncPod(
 		}
 	}
 
-	for (const url of unreadable) {
-		report.skipped.push(`${url} (no access)`);
+	for (const { url, reason } of unreadable) {
+		report.skipped.push(
+			`${url} (listing failed: ${reason}, local copies left as they are)`,
+		);
 	}
 }
 
@@ -885,9 +909,11 @@ async function pull(
 }
 
 /**
- * Writes one file to the pod. Returns false when the pod refused it, rather than
- * throwing: a read-only pod refuses every write, and one refusal must not abandon
- * the rest of the run — the remaining files, and every pod after this one.
+ * Writes one file to the pod. Returns null on success, or the status the pod refused
+ * it with — rather than throwing, and rather than a bare false: a 403 on one folder's
+ * ACL and a 401 on a mangled URL are different fixes, and the user sees only this.
+ * Not thrown because a read-only pod refuses every write, and one refusal must not
+ * abandon the rest of the run — the remaining files, and every pod after this one.
  *
  * `wrapped` is the already-unwrapped body of a fenced note: what is on disk is our
  * frontmatter and fence, not the pod bytes, so the caller takes those off first and
@@ -901,7 +927,7 @@ async function push(
 	url: string,
 	state: SyncState,
 	wrapped?: { body: string; contentType: string },
-): Promise<boolean> {
+): Promise<number | null> {
 	let type = mimeOf(file.path);
 	let body: string | ArrayBuffer;
 	if (wrapped) {
@@ -926,9 +952,9 @@ async function push(
 		headers: { 'content-type': type },
 		body,
 	});
-	if (!res.ok) return false;
+	if (!res.ok) return res.status;
 	state[file.path] = { url, pod: '', local: file.stat.mtime };
-	return true;
+	return null;
 }
 
 function summarize(report: Report, authenticated: boolean): string {

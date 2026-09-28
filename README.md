@@ -223,7 +223,8 @@ no clock comparison between machines is needed. Assumes one editor at a time.
 | Deleted on pod | Local note moved to trash, recoverable |
 | Deleted locally | Pod copy kept, unless **Delete on pod** is enabled. It is not pulled again — see **Restore deleted notes** below |
 | Many notes missing at once | All pod deletions refused — a renamed or unmounted folder cannot empty your pod. Counted per pod, so adding pods never weakens the guard |
-| Pod refuses the write | Reported as skipped, that pod's copy left alone, the run carries on |
+| Pod refuses the write | Reported as skipped with the status the pod gave (`PUT refused: 403`), that pod's copy left alone, the run carries on. `no write access per pod root` instead means the pod root said you may only read, so nothing was sent |
+| A folder cannot be listed | A dropped network, a 403 from a tightened ACL or a server error all look like an empty folder. Everything under it is frozen for the run instead — nothing pulled, pushed, trashed or deleted — and the folder is reported with the reason (`listing failed: 403`, `listing failed: network error: …`). The next run that can list it carries on normally. The pod root failing freezes the whole folder |
 | Vault refuses the name | A pod name is not a vault name — `:` and `?` are ordinary in a URL and illegal in an Obsidian file name. That one resource is reported as skipped and retried on the next run; every other resource in the container syncs normally |
 | Pod pointed at another container | The folder's sync history named the old container, so it is forgotten and the new one is pulled in full. Files the old container left and you never touched are its copies: replaced where the new container has that name, moved to trash where it does not. Anything you edited is yours and is kept |
 | Matches an ignore pattern | Left alone on both sides — not pushed, not pulled, not deleted, not read as missing. Counted in the summary rather than listed as skipped |
@@ -238,8 +239,9 @@ accept. A healthy run skips nothing and the list is not shown.
 
 Every resource a run does not sync is named there, bar the ones an ignore rule
 excluded — those are your own instruction, and the summary carries their count. A
-line naming a *folder* rather than a file is the other exception: it means that pod
-could not be reached at all, and its container was left untouched.
+line naming a *folder* or a container URL rather than a file is the other exception:
+that pod, or that container inside it, could not be listed, and every note under it
+was left exactly as it was on both sides.
 
 ### Restore deleted notes
 
@@ -392,6 +394,15 @@ writes `nm-*` resources. Checks that each one is pushed rather than reported as
 
 ```bash
 POD_URL=… POD_ID=… POD_SECRET=… node test/names.mjs
+```
+
+A container that stops answering — writes `ur-*` resources and ACLs under them, so a
+local server running WAC. Checks that a 403 folder, a network error on one container
+and an unlistable root each leave every synced note in place rather than trashing it,
+that the next readable run carries on, and that a refused PUT reports its status:
+
+```bash
+POD_URL=… POD_ID=… POD_SECRET=… node test/unreadable.mjs
 ```
 
 Ignore rules through a whole sync, with the vault root as the folder — writes `ig-*`

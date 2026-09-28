@@ -38,6 +38,8 @@ is true about *this* plugin.
 - Every path a run leaves alone or removes must say so — a `report.skipped` line or
   a `report.deleted*` counter. The summary string carries counts only. A skip naming
   a folder rather than a file means a whole pod was unreachable, nothing less.
+- A container whose listing failed freezes every path under it for the run (`frozen()`
+  in `syncPod`): absent from `remote`, it would otherwise read as deleted on the pod.
 - An ignored path is the one exception: counted in `report.ignored`, never listed.
   The skip list is what the user must act on, and a rule working is not that.
 - A pod folder is a *prefix*, `podPrefix()`: `Pod/` for a folder, `''` for the vault
