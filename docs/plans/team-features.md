@@ -85,6 +85,31 @@ folders (folder note → container `.acl`) after.
 
 Still open: does a pull write the pod's real ACL back into the property.
 
+**What the servers do (checked 2026-10-19).**
+- Local CSS 7.2, default config: the pod owner can always read and rewrite any
+  `.acl` (`OwnerPermissionReader`), but deleting one also needs Write on its
+  container (`ParentContainerReader`, the WAC rule for deletes). An ACL that takes
+  Write away can be rewritten but not deleted. This was why `unreadable.mjs`
+  failed; fixed in `8cf4fd5`.
+- `pod.nicolasdb.eu`, live, on a throwaway `alex/acl-probe-…/` folder since deleted:
+  a per-note `a.md.acl` naming the owner (Read, Write, Control) and one guest
+  (Read) let the guest read `a.md` while `b.md` beside it stayed refused.
+  Deleting that `.acl` removed the guest's access again, and the owner kept full
+  rights throughout. The guest was the `claude-alex` agent WebID.
+- 2026-09-28, same server: an `.acl` that left the owner out locked the owner out
+  of the folder and of the `.acl` itself. Either this server has no owner override
+  or `alex` is not recorded as the pod's owner (to ask Nicolas). The leftover is
+  `alex/acl-test-1790599365365/`, which only Nicolas can remove.
+
+**Constraints this sets.**
+- Every `.acl` the plugin writes names the owner with Read, Write and Control, and
+  never relies on an owner override.
+- Unsharing a note deletes its `.acl`, so the note inherits from its folder again.
+  This works only while the owner has Write on the folder, which an owner-inclusive
+  ACL guarantees.
+- A note's ACL is at the URL its `Link: rel="acl"` header names (`<note>.acl` on
+  CSS). Read it from the header and never build it by hand.
+
 ## Chunk 3 — vault preset handed out from a website (design pending)
 
 **Constraint.** Obsidian never downloads a missing plugin on its own: a plugin runs only
