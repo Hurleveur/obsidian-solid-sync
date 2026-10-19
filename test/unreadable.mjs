@@ -28,9 +28,9 @@ const ROOT = new URL('ur-scratch/', POD).href;
 const WEBID = new URL('profile/card#me', POD).href;
 const SEED = ['open/a.md', 'locked/b.md', 'locked/c.md', 'ro/d.md'];
 
-// An ACL naming only the modes given, for us. A local CSS lets the pod owner write
-// any ACL whatever it says (OwnerPermissionReader), but not DELETE one: that needs
-// Write on the container too, which these ACLs take away.
+// An ACL naming only the modes given, for us. Its own acl:Control lets us rewrite
+// it (default.json has no owner override for a pod below the root), but not DELETE
+// it: that needs Write on the container too, which these ACLs take away.
 const acl = (container, modes) =>
 	f(`${ROOT}${container}.acl`, {
 		method: 'PUT',

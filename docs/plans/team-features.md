@@ -86,20 +86,31 @@ folders (folder note → container `.acl`) after.
 Still open: does a pull write the pod's real ACL back into the property.
 
 **What the servers do (checked 2026-10-19).**
-- Local CSS 7.2, default config: the pod owner can always read and rewrite any
-  `.acl` (`OwnerPermissionReader`), but deleting one also needs Write on its
-  container (`ParentContainerReader`, the WAC rule for deletes). An ACL that takes
-  Write away can be rewritten but not deleted. This was why `unreadable.mjs`
-  failed; fixed in `8cf4fd5`.
+- Local CSS 7.2: deleting an `.acl` needs Write on its container as well as
+  Control (`ParentContainerReader`, the WAC rule for deletes). An ACL that takes
+  Write away can be rewritten through its own Control, but not deleted. This was
+  why `unreadable.mjs` failed; fixed in `8cf4fd5`.
+- The owner override, which lets a pod's owner read and rewrite any `.acl` in it
+  (`OwnerPermissionReader`), depends on the server's storage-location setting.
+  Under `config/default.json` (`storage/location/root.json`) only the server root
+  counts as a storage, so the override finds no pod and never applies: an `.acl`
+  that leaves the owner out locks the owner out of the `.acl` too. Under
+  `config/file.json` (`storage/location/pod.json`) the same owner-less `.acl`
+  still lets the owner read and rewrite it, and that rewrite recovers the folder.
+  Both were checked locally.
 - `pod.nicolasdb.eu`, live, on a throwaway `alex/acl-probe-…/` folder since deleted:
   a per-note `a.md.acl` naming the owner (Read, Write, Control) and one guest
   (Read) let the guest read `a.md` while `b.md` beside it stayed refused.
   Deleting that `.acl` removed the guest's access again, and the owner kept full
   rights throughout. The guest was the `claude-alex` agent WebID.
 - 2026-09-28, same server: an `.acl` that left the owner out locked the owner out
-  of the folder and of the `.acl` itself. Either this server has no owner override
-  or `alex` is not recorded as the pod's owner (to ask Nicolas). The leftover is
-  `alex/acl-test-1790599365365/`, which only Nicolas can remove.
+  of the folder and of the `.acl` itself. It was still locked on 2026-10-19: a
+  token for `alex/profile/card#me` got 403 on reading that `.acl`. The server root
+  advertises `pim:Storage` as well as `alex/`, the way the root layout does. The
+  likely cause is a root storage-location config. That is to confirm with
+  Nicolas; switching to `storage/location/pod.json` would turn the override on.
+  The leftover is `alex/acl-test-1790599365365/`, which only Nicolas can remove
+  until then.
 
 **Constraints this sets.**
 - Every `.acl` the plugin writes names the owner with Read, Write and Control, and
