@@ -8,6 +8,9 @@
  *   history/journal.jsonl    one JSON line per event
  *   history/baselined/<key>  marker: this pod folder's starting files are stored
  *
+ * shortcut: whole files, uncompressed, never pruned — a few hundred MB a year at
+ * worst for a notes vault; add gzip (CompressionStream) and pruning if it grows past that.
+ *
  * A backup that cannot be written throws, and the caller leaves that path alone —
  * a change must never go ahead without its copy. The journal is the index, not the
  * copy, so a journal line that fails is reported and never undoes anything.

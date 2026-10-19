@@ -291,8 +291,10 @@ your vault or on a pod, it stores the bytes it is about to replace:
   journal.jsonl    one line per event
 ```
 
-The first run with history on also stores every file already in a synced folder
-(`baseline`). A line looks like this, with `action` one of `baseline`, `pushed`,
+The first run with history on also stores every note (`.md`) already in a synced
+folder (`baseline`). Attachments are left out of it — they are most of the bytes and
+rarely edited — and stored only once one is about to be overwritten or deleted.
+Nothing is compressed or pruned. A line looks like this, with `action` one of `baseline`, `pushed`,
 `pulled`, `deleted-local`, `deleted-pod` or `conflict`:
 
 ```
@@ -482,7 +484,7 @@ POD_URL=… POD_ID=… POD_SECRET=… node test/synclog.mjs
 ```
 
 Local history — writes `hi-*` resources into two containers of one scratch pod. Checks
-that the baseline covers every mapped file, that a pull, a push over a pod copy, a
+that the baseline covers every mapped note and no attachment, that a pull, a push over a pod copy, a
 pushed deletion and a remote deletion each leave the replaced bytes in `blobs/`, that a
 failing history write skips the path and changes neither side, and that the off switch
 stores nothing:

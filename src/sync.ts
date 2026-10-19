@@ -671,11 +671,12 @@ async function syncPod(
 
 	// Before anything below can change a file: what is here now is the starting point.
 	// A failure costs the baseline only (retried next run); each overwrite or deletion
-	// still stores its own bytes first.
+	// still stores its own bytes first. Notes only: attachments are most of the bytes,
+	// rarely edited, and still stored the moment one is overwritten or deleted.
 	if (hist) {
 		for (const { path, message } of await hist.baseline(
 			`${root}|${prefix}`,
-			[...local.keys()],
+			[...local.keys()].filter((p) => p.endsWith('.md')),
 		)) {
 			report.skipped.push(`${path} (history baseline: ${message})`);
 		}

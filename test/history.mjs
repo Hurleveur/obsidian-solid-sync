@@ -97,8 +97,8 @@ try {
 	const base = journal().filter((e) => e.action === 'baseline');
 	assert.deepEqual(
 		base.map((e) => `${e.pod === ROOT ? 'P' : e.pod === ROOT2 ? 'O' : '?'} ${e.path}`).sort(),
-		['O Other/hi-o.md', 'P Pod/deep/hi-b.md', 'P Pod/hi-a.md', 'P Pod/hi-bin.png', 'P Pod/hi-c.md'],
-		'one baseline line per mapped file, none for Loose/ or the pod-only note',
+		['O Other/hi-o.md', 'P Pod/deep/hi-b.md', 'P Pod/hi-a.md', 'P Pod/hi-c.md'],
+		'one baseline line per mapped note, none for an attachment, Loose/ or the pod-only note',
 	);
 	for (const e of base) {
 		assert.equal(e.before, null);
@@ -106,16 +106,16 @@ try {
 		assert.deepEqual(blob(e.after), local(e.path), `${e.path}: blob holds the file`);
 		assert.equal(sha(blob(e.after)), e.after, 'blob is named by its hash');
 	}
-	assert.deepEqual(blob(sha(BIN)), BIN, 'binary files byte for byte');
+	assert.equal(blob(sha(BIN)), null, 'attachments are not in the baseline');
 	assert.deepEqual(plugin.lastSkipped, []);
 	// The pod never sees the history.
 	const listing = await (await f(ROOT, { headers: { 'cache-control': 'no-cache' } })).text();
 	assert.ok(!/blobs|journal|history/.test(listing), 'history is not on the pod');
-	ok('baseline covers every mapped file and nothing else');
+	ok('baseline covers every mapped note and nothing else');
 
 	// --- 2. a later run adds no second baseline ----------------------------------
 	await sync('2. nothing to do');
-	assert.equal(journal().filter((e) => e.action === 'baseline').length, 5);
+	assert.equal(journal().filter((e) => e.action === 'baseline').length, 4);
 	ok('baseline runs once per pod folder');
 
 	// --- 3. a pull that changes a note keeps the old local bytes -----------------
@@ -171,6 +171,7 @@ try {
 	write('Pod/hi-c.md', '# c2\n');
 	write('Pod/hi-bin.png', BIN2);
 	await sync('6b. push c2 and bin2');
+	assert.deepEqual(blob(sha(BIN)), BIN, 'an attachment left out of the baseline is stored once overwritten');
 
 	// --- 7. a history write that fails stops that path, on both sides -------------
 	const realWrite = vault.adapter.writeBinary;
