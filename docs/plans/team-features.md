@@ -169,68 +169,47 @@ Decided 2026-10-19: a GitHub Action builds one generic zip (config plus the plug
 latest release files fetched at build time) and the website hands it out. Nothing
 personal is in it.
 
-The pods come after login, automatically: the website knows which pods each member
-can reach and serves that list; the plugin reads it and adds the rows itself. Solid
-has no "which pods may I reach" query, so this list is the website's to keep — it is
-the operator, so it can.
+The pods come after login, automatically. Solid has no "which pods may I reach"
+query, so the plugin reads the team's own description of itself.
 
-Still open: the list's URL and shape (to agree with Nicolas), and what the plugin
-does when a row it added disappears from the list.
+Decided 2026-10-19: the plugin reads the roster Nicolas's backoffice already keeps
+(`nicolasdb/solid-backoffice`, solid-kit ADR 006) rather than a list of our own. A
+`team.json` was proposed first and dropped: it would have been a second member list.
 
-### Proposed contract (suggested by Claude, 2026-10-19, not yet agreed)
-
-**Where the list lives.** A JSON resource on a pod, e.g.
-`https://pod.nicolasdb.eu/hyperscope/team.json`, whose `.acl` lets team members read
-it. The plugin reads it with the token it already has, so the website needs no API
-and no login of its own for this: it edits one file and its `.acl`. Adding someone
-to the team is then two writes by the website: their WebID into the list, and into
-the `.acl`s of the pods they may reach.
-
-**Shape.**
-```json
-{
-  "version": 1,
-  "members": [
-    { "name": "alexandre", "webId": "https://pod.nicolasdb.eu/alex/profile/card#me" },
-    { "name": "nicolas", "webId": "https://pod.nicolasdb.eu/nicolasdb/profile/card#me" }
-  ],
-  "pods": [
-    { "url": "https://pod.nicolasdb.eu/hyperscope/vault/", "folder": "projects" },
-    { "url": "https://pod.nicolasdb.eu/nicolasdb/", "folder": "team/nicolas/pod" }
-  ]
-}
-```
-- `members` replaces the Team members setting; `name` is what `share:` uses.
-- `pods` are the same rows as the plugin's `PodConfig` (`url`, `folder`). No
-  `access` field: the plugin already reads it from `WAC-Allow`, which is the truth
-  where the list could be stale.
-- One list for the whole team. A pod a member cannot read is skipped quietly for
-  them, so the website does not need a list per member. The member's own pod is
-  not in the list; it is the one row they add themselves (or the plugin adds from
-  their WebID, `team/<name>`).
-- `version` lets the plugin refuse a shape it does not know instead of misreading it.
+**What exists, live on `pod.nicolasdb.eu` (read 2026-10-19).**
+- `hyperscope/config.ttl`, public: `<#hyperscope> a hs:Collective; hs:roster
+  <membres.ttl>; …`. Field by field: solid-backoffice
+  `docs/reference/collective-files.md`.
+- `hyperscope/membres.ttl` (972 bytes, changed 2026-10-12), members only, written by
+  the backoffice when an admin accepts someone:
+  `<config.ttl#hyperscope> foaf:member <WebID>` and `<WebID> foaf:nick "nicolas"`.
+  The nick is set at acceptance and never changed once used.
+- The roster grants nothing; access stays in per-WebID `.acl`s, as here.
 
 **Plugin side.**
-- A `teamList` setting holds the URL. It is the same for everyone, so it can ship in
-  the generic zip's `data.json` without credentials.
-- Read on every sync; a row the plugin added carries `fromTeam: true`, so hand-added
-  rows are never touched.
-- A row gone from the list stops syncing; its local files stay. Never deletes a
-  local file because a row vanished.
-- The list unreadable (offline, 403) → keep the last rows, one skipped line.
+- One setting, the team's `config.ttl` URL, the same for everyone, so it ships in
+  the generic zip.
+- Each run: `config.ttl`, then `hs:roster`, then members and nicks. Each member's pod
+  (`ownPod(webId)`) becomes a row at `team/<nick>`; the nicks also replace the Team
+  members setting for `share:`.
+- A row the plugin added is marked, so hand-added rows are never touched; a
+  hand-added row with the same URL is taken over and moved to `team/<nick>`.
+- A row gone from the roster stops syncing; its local files stay.
+- Roster unreadable (offline, 403, not a member yet) keeps the last rows, one
+  skipped line.
+- Turtle, not JSON: a reader for these two small files, no new dependency if a
+  line-level parse holds; checked against the live files before choosing.
+- Names follow the nicks: if Alexandre's nick is not `alexandre`, the folder is renamed
+  rather than the nick (decided 2026-10-19).
 
-Decided 2026-10-19:
-- A pod file, not a website endpoint.
-- In the team's main pod: `https://pod.nicolasdb.eu/hyperscope/team.json`, beside
-  `vault/` rather than in it, so it never syncs into the vault as a note. Its own
-  `.acl` gives members Read and only the website Write. Every member can write
-  `vault/`, and whoever writes the list decides which WebID `share: [nicolas]` grants.
-- The plugin adds each member's pod itself, at `team/<name>`, `<name>` from the list,
-  and the whole pod, never a subfolder (`team/nicolas`, not `team/nicolas/pod`).
-  A hand-added row with the same URL is taken over: its folder moves to the list's.
+**Blockers, both Nicolas's.**
+- `alex/profile/card#me` gets 403 on `membres.ttl`, and its profile declares no
+  `org:memberOf`: Alexandre has not joined HyperScope through the backoffice. Nobody's
+  device can be tested until one member besides Nicolas has.
+- The projects pod, `hyperscope/vault/`, is not described in `config.ttl`. It needs
+  one property (e.g. `hs:vault <vault/>`, mapped to `projects/`), which only the owner
+  writes.
+- The example roster names Nicolas as `hyperscope_ndb`, not `nicolasdb`. If the live
+  one does, his row points at `hyperscope_ndb/`, not the pod synced today.
 
-- Names stay as they are (`alexandre`, not `alex`). The list's `name` sets the folder,
-  the `share:` name and the claude-office identity (`team/<name>/tasks.md`,
-  `activity/`), which must agree, so a rename would touch all three on every device.
-
-Next: split into build chunks and build, starting 2026-10-20.
+Next: Alexandre joins through the backoffice; then build, starting 2026-10-20.
