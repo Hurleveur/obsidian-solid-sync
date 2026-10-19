@@ -313,6 +313,41 @@ local history** in the settings.
 To restore by hand, find the file's line in `journal.jsonl`, take the `before` hash,
 and copy `blobs/<hash>` over the file (or upload it to the pod).
 
+## Sharing a note
+
+A note in your own pod can be opened to other people from its properties:
+
+```yaml
+---
+share: [neil, nicolas]      # may read it
+share-write: [neil]         # may read and edit it
+---
+```
+
+Each name comes from **Team members** in the settings, one per line, a name and that
+person's WebID (`neil https://pod.example/neil/profile/card#me`). A WebID can also be
+written in the property itself.
+
+The plugin applies the properties when this device uploads the note, by writing the
+note's own access list (`.acl`) on the pod: you with full control, and the people
+named. Removing both properties deletes that list, so the note is back to whatever its
+folder allows. Notes beside it are not affected.
+
+- **It replaces the folder's access, it does not add to it.** A note shared with Neil
+  inside a folder Nicolas can read is no longer readable by Nicolas.
+- **Only your own pod.** A note in someone else's pod is skipped with a reason.
+- **Only edits made on this device.** Properties that arrive in a pull were written by
+  whoever could edit the note; applying them would let anyone with write access hand
+  out access, which only the owner may do.
+- **A name the plugin does not know stops the whole note**, rather than sharing it
+  with some of the people listed.
+- **If the access list was changed by something else** (another Solid app, the
+  server's admin), it is left as it is and the note is named once in the skip list.
+  Change the note's sharing properties again to replace it.
+
+The properties are not rewritten from the pod: they say what was asked, not what
+another app may have changed since. Folders cannot be shared this way yet.
+
 ## Sharing it
 
 A plugin is two files in `<vault>/.obsidian/plugins/solid-sync/`: `main.js` and
@@ -481,6 +516,17 @@ off switch write nothing, and that the log neither pulls back nor starts a sync:
 
 ```bash
 POD_URL=… POD_ID=… POD_SECRET=… node test/synclog.mjs
+```
+
+Sharing a note — writes `sh-*` resources and their ACLs, and needs a second account
+on the same server as the guest (add it to `seed.json`). Checks that `share` and
+`share-write` grant what they say to the guest and nothing beside the note, that
+unsharing deletes the ACL, that an ACL changed outside the plugin is reported once and
+replaced by the next edit, that an unknown name or a pulled note applies nothing, and
+that a property value cannot add its own grant:
+
+```bash
+POD_URL=… POD_ID=… POD_SECRET=… GUEST_ID=… GUEST_SECRET=… node test/share.mjs
 ```
 
 Local history — writes `hi-*` resources into two containers of one scratch pod. Checks

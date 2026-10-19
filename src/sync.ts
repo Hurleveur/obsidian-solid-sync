@@ -14,6 +14,7 @@
 import { Notice, TFile, Vault, normalizePath } from 'obsidian';
 import type SolidSyncPlugin from './main';
 import { History, sha256Hex } from './history';
+import { applySharing, parseMembers, wantedAccess, type ShareRecord } from './share';
 import type { PodConfig } from './settings';
 import {
 	anonymousFetch,
@@ -40,6 +41,8 @@ export interface FileState {
 	 * never as "no change".
 	 */
 	hash?: string;
+	/** The note's own `.acl` as this device last left it; carried over every rewrite. */
+	share?: ShareRecord;
 }
 
 export type SyncState = Record<string, FileState>;
@@ -831,6 +834,7 @@ async function syncPod(
 					pod: r.modified,
 					local,
 					hash: remote.hash,
+					share: prev?.share,
 				};
 			} else if (podChanged) {
 				await pull(vault, fetcher, entry, path, state, report, hist);
@@ -912,6 +916,28 @@ async function syncPod(
 			await syncPath(path);
 		} catch (e) {
 			report.skipped.push(`${path} (${(e as Error).message})`);
+		}
+	}
+
+	// Only notes pushed from here: a property that arrived in a pull was set by
+	// whoever could edit the note, and Write must not grant access (see share.ts).
+	// Settings saved before `members` existed lack it; this must not cost the pod.
+	const members = parseMembers(plugin.settings.members ?? []);
+	for (const path of pushedPaths) {
+		const entry = state[path];
+		const file = vault.getFileByPath(path);
+		if (!entry || !file || !path.endsWith('.md')) continue;
+		try {
+			const wanted = wantedAccess(await vault.read(file), members);
+			if (typeof wanted === 'string') {
+				report.skipped.push(`${path} (sharing not applied: ${wanted})`);
+				continue;
+			}
+			const { record, skip } = await applySharing(fetcher, entry.url, wanted, entry.share);
+			if (record) entry.share = record.key || record.etag ? record : undefined;
+			if (skip) report.skipped.push(`${path} (${skip})`);
+		} catch (e) {
+			report.skipped.push(`${path} (sharing not applied: ${(e as Error).message})`);
 		}
 	}
 
@@ -1015,7 +1041,7 @@ function markUnpushable(
 	local: number,
 	pod: string,
 ) {
-	state[path] = { url, pod, local };
+	state[path] = { url, pod, local, share: state[path]?.share };
 }
 
 /**
@@ -1067,6 +1093,7 @@ async function pull(
 		pod: r.modified,
 		local: await writeFile(vault, path, remote.content),
 		hash: remote.hash,
+		share: state[path]?.share,
 	};
 	report.pulled++;
 	await hist?.log(path, 'pulled', before, hist && (await sha256Hex(remote.content)));
@@ -1122,7 +1149,13 @@ async function push(
 		body,
 	});
 	if (!res.ok) return res.status;
-	state[file.path] = { url, pod: '', local, hash: await sha256Hex(body) };
+	state[file.path] = {
+		url,
+		pod: '',
+		local,
+		hash: await sha256Hex(body),
+		share: state[file.path]?.share,
+	};
 	return null;
 }
 

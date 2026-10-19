@@ -1,8 +1,17 @@
 // Minimal stand-in for the Obsidian API, backed by a real folder on disk.
 import fs from 'node:fs';
 import path from 'node:path';
+import { createRequire } from 'node:module';
 
 export const normalizePath = (p) => p.replace(/\/+$/, '');
+
+// Obsidian's YAML is its own bundled parser; `yaml` stands in for it here, loaded at
+// run time because esbuild cannot bundle its CommonJS into the ESM test bundle.
+export const parseYaml = (text) => createRequire(import.meta.url)('yaml').parse(text);
+export function getFrontMatterInfo(content) {
+	const m = /^---\r?\n([\s\S]*?)\r?\n---(\r?\n|$)/.exec(content);
+	return m ? { exists: true, frontmatter: m[1] } : { exists: false, frontmatter: '' };
+}
 
 // Stands in for Obsidian's requestUrl, backed by Node's fetch, so the node test
 // suite exercises the same requestUrl-shaped path the plugin runs in Obsidian.

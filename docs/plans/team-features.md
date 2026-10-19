@@ -81,7 +81,13 @@ must carry the owner's full control over, or the owner locks themselves out.
 
 Decided 2026-10-19: `share: [nicolas, neil]` grants read, `share-write: [...]` write,
 by team name resolved to a WebID through the member list (chunk 3). Notes first;
-folders (folder note → container `.acl`) after.
+folders (folder note → container `.acl`) after. Until chunk 3's list exists, names
+come from a **Team members** setting (`name WebID` per line); a WebID may also be
+written directly.
+
+Notes: built 2026-10-19 (`src/share.ts`, `test/share.mjs` against a local CSS).
+Applied on push only, own pod only. Still to do: folders, and a live check on
+`pod.nicolasdb.eu` with a real teammate.
 
 Decided 2026-10-19: no write-back for now; the plugin warns instead, as suggested
 below. The question was whether a pull writes the pod's real ACL back into the

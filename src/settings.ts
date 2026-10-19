@@ -38,6 +38,8 @@ export interface SolidSyncSettings {
 	 * attachments folder should not need saying twice.
 	 */
 	ignore: string[];
+	/** `name WebID` per line: who a note's `share` and `share-write` may name. */
+	members: string[];
 }
 
 export const DEFAULT_SETTINGS: SolidSyncSettings = {
@@ -52,6 +54,7 @@ export const DEFAULT_SETTINGS: SolidSyncSettings = {
 	history: true,
 	maxFileMB: 10,
 	ignore: [],
+	members: [],
 };
 
 /** Settings written before pods were a list. Read once, then dropped. */
@@ -74,6 +77,7 @@ export function migrateSettings(
 	// a list saved as something that is not one — both are iterated without asking.
 	if (!Array.isArray(settings.pods)) settings.pods = [];
 	if (!Array.isArray(settings.ignore)) settings.ignore = [];
+	if (!Array.isArray(settings.members)) settings.members = [];
 	if (podUrl && !settings.pods.length) {
 		settings.pods = [{ url: podUrl, folder: folder ?? 'Pod' }];
 		settings.issuer ||= new URL(podUrl).origin;
@@ -560,6 +564,26 @@ export class SolidSyncSettingTab extends PluginSettingTab {
 					ignoreNote.setText(this.ignoreCount());
 				});
 		});
+
+		new Setting(containerEl)
+			.setName('Team members')
+			.setDesc(
+				'One per line: a name, a space, then their WebID. A note in your own pod with "share: [name]" in its properties can be read by them, and "share-write: [name]" lets them edit it, once you edit and sync it. A WebID can be written there directly too.',
+			)
+			.addTextArea((t) => {
+				t.inputEl.rows = 3;
+				t.setPlaceholder('neil https://pod.example/neil/profile/card#me')
+					.setValue(this.plugin.settings.members.join('\n'))
+					.onChange(async (v) => {
+						await this.set(
+							'members',
+							v
+								.split('\n')
+								.map((line) => line.trim())
+								.filter(Boolean),
+						);
+					});
+			});
 
 		new Setting(containerEl).setName('Deleted notes').setHeading();
 

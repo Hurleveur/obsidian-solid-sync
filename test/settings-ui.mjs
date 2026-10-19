@@ -73,6 +73,7 @@ assert.deepEqual(
 		'Keep local history',
 		'Maximum file size (MB)',
 		'Ignore',
+		'Team members',
 		'Deleted notes',
 		'Delete on pod when a note is deleted',
 		'Restore deleted notes',
