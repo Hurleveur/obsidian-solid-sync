@@ -96,7 +96,10 @@ plugin's default) shares its folder through the container's `.acl`, with
 `acl:default` so later notes inherit it. Decided 2026-10-19: the pod's top folder
 note is refused, since unsharing it would fall back to the server's rules, not the
 owner's, and a bad write there locks the owner out of the whole pod; and a shared
-folder replaces what it inherits rather than adding to it. Not checked live.
+folder replaces what it inherits rather than adding to it. Checked live 2026-10-19
+with 0.7.0 on `pod.nicolasdb.eu`: sharing a folder note with the `claude-alex` agent
+let it list the folder and read a note in it, and one added later; removing the
+property refused both. The top-of-pod refusal was checked locally only.
 
 Decided 2026-10-19: no write-back for now; the plugin warns instead, as suggested
 below. The question was whether a pull writes the pod's real ACL back into the
