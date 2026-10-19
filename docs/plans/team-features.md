@@ -219,5 +219,16 @@ the `.acl`s of the pods they may reach.
   local file because a row vanished.
 - The list unreadable (offline, 403) → keep the last rows, one skipped line.
 
-**To decide.** That the website writes to a pod rather than serving its own URL;
-where `team.json` sits; whether the plugin adds the member's own pod from the WebID.
+Decided 2026-10-19:
+- A pod file, not a website endpoint.
+- In the team's main pod: `https://pod.nicolasdb.eu/hyperscope/team.json`, beside
+  `vault/` rather than in it, so it never syncs into the vault as a note. Its own
+  `.acl` gives members Read and only the website Write. Every member can write
+  `vault/`, and whoever writes the list decides which WebID `share: [nicolas]` grants.
+- The plugin adds each member's pod itself, at `team/<name>`, `<name>` from the list,
+  and the whole pod, never a subfolder (`team/nicolas`, not `team/nicolas/pod`).
+  A hand-added row with the same URL is taken over: its folder moves to the list's.
+
+Still open: whether `alexandre` becomes `alex`. The list's `name` sets the folder,
+the `share:` name and the claude-office identity (`team/<name>/tasks.md`,
+`activity/`), which must agree, so a rename touches all three on every device.
