@@ -86,8 +86,10 @@ come from a **Team members** setting (`name WebID` per line); a WebID may also b
 written directly.
 
 Notes: built 2026-10-19 (`src/share.ts`, `test/share.mjs` against a local CSS).
-Applied on push only, own pod only. Still to do: folders, and a live check on
-`pod.nicolasdb.eu` with a real teammate.
+Applied on push only, own pod only. Checked live 2026-10-19 with 0.6.0 on
+`pod.nicolasdb.eu`: `share` naming the `claude-alex` agent let it read the note,
+and removing the property refused it again; nothing skipped. Write grants were not
+checked live. Still to do: folders.
 
 Decided 2026-10-19: no write-back for now; the plugin warns instead, as suggested
 below. The question was whether a pull writes the pod's real ACL back into the
