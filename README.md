@@ -279,6 +279,38 @@ It only records what this plugin did. Changes made by other apps straight to the
 are not logged, and there is no undo: the log says what happened, it does not keep the
 old text.
 
+## Local history
+
+A bad sync (a pull over text you wanted, a deletion pushed by mistake, a pod wiped)
+needs something to put back. So before the plugin overwrites or deletes a file, in
+your vault or on a pod, it stores the bytes it is about to replace:
+
+```
+.obsidian/plugins/solid-sync/history/
+  blobs/<sha256>   the contents, once per distinct content
+  journal.jsonl    one line per event
+```
+
+The first run with history on also stores every file already in a synced folder
+(`baseline`). A line looks like this, with `action` one of `baseline`, `pushed`,
+`pulled`, `deleted-local`, `deleted-pod` or `conflict`:
+
+```
+{"at":"2026-10-19T16:40:12.000Z","pod":"https://pod.example/alex/notes/","path":"Pod/kanban.md","action":"pulled","before":"<hash>","after":"<hash>"}
+```
+
+`before` is the hash of what was replaced, `after` of what took its place (`null` for
+none). For `pushed` and `deleted-pod` those are the pod's bytes, otherwise the vault's.
+
+It stays on this device: the folder is inside a dot-folder, which never syncs, and
+nothing uploads it. If a copy cannot be written, that file is skipped and named in the
+skip list, so nothing is overwritten without its backup. There is no pruning and no
+restore button yet, and a large vault is stored in full once. Turn it off with **Keep
+local history** in the settings.
+
+To restore by hand, find the file's line in `journal.jsonl`, take the `before` hash,
+and copy `blobs/<hash>` over the file (or upload it to the pod).
+
 ## Sharing it
 
 A plugin is two files in `<vault>/.obsidian/plugins/solid-sync/`: `main.js` and
@@ -447,6 +479,16 @@ off switch write nothing, and that the log neither pulls back nor starts a sync:
 
 ```bash
 POD_URL=… POD_ID=… POD_SECRET=… node test/synclog.mjs
+```
+
+Local history — writes `hi-*` resources into two containers of one scratch pod. Checks
+that the baseline covers every mapped file, that a pull, a push over a pod copy, a
+pushed deletion and a remote deletion each leave the replaced bytes in `blobs/`, that a
+failing history write skips the path and changes neither side, and that the off switch
+stores nothing:
+
+```bash
+POD_URL=… POD_ID=… POD_SECRET=… node test/history.mjs
 ```
 
 Ignore rules through a whole sync, with the vault root as the folder — writes `ig-*`

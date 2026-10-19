@@ -70,6 +70,7 @@ assert.deepEqual(
 		'Sync on startup',
 		'Sync after changes',
 		'Keep a sync log',
+		'Keep local history',
 		'Maximum file size (MB)',
 		'Ignore',
 		'Deleted notes',

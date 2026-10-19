@@ -200,6 +200,7 @@ export class App {}
 export class TFile {}
 
 export class Vault {
+	configDir = '.obsidian';
 	constructor(root) {
 		this.root = root;
 		this.adapter = {
@@ -209,6 +210,18 @@ export class Vault {
 				fs.writeFileSync(this.abs(p), data);
 			},
 			writeBinary: async (p, data) => this.adapter.write(p, Buffer.from(data)),
+			// What the history needs of the real adapter; `rename` replaces nothing
+			// that exists, as Obsidian's does not.
+			mkdir: async (p) => fs.mkdirSync(path.join(root, p), { recursive: true }),
+			readBinary: async (p) => {
+				const b = fs.readFileSync(path.join(root, p));
+				return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
+			},
+			append: async (p, data) => fs.appendFileSync(path.join(root, p), data),
+			rename: async (from, to) => {
+				if (fs.existsSync(path.join(root, to))) throw new Error(`Destination file already exists: ${to}`);
+				fs.renameSync(path.join(root, from), path.join(root, to));
+			},
 			stat: async (p) => {
 				if (!fs.existsSync(this.abs(p))) return null;
 				const st = fs.statSync(this.abs(p));

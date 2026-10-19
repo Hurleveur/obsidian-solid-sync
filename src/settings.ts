@@ -28,6 +28,8 @@ export interface SolidSyncSettings {
 	syncOnChange: boolean;
 	/** Append what this device pushed or deleted to `_sync-log/<you>.md` in each pod folder. */
 	syncLog: boolean;
+	/** Keep every file the sync overwrites or deletes, on this device only. */
+	history: boolean;
 	/** Files larger than this are left alone on both sides. 0 disables the limit. */
 	maxFileMB: number;
 	/**
@@ -47,6 +49,7 @@ export const DEFAULT_SETTINGS: SolidSyncSettings = {
 	syncOnStartup: false,
 	syncOnChange: false,
 	syncLog: true,
+	history: true,
 	maxFileMB: 10,
 	ignore: [],
 };
@@ -502,6 +505,17 @@ export class SolidSyncSettingTab extends PluginSettingTab {
 				t
 					.setValue(this.plugin.settings.syncLog)
 					.onChange((v) => this.set('syncLog', v)),
+			);
+
+		new Setting(containerEl)
+			.setName('Keep local history')
+			.setDesc(
+				'Before a sync overwrites or deletes a note, here or on a pod, a copy is stored in this plugin\'s history folder, so a bad sync can be put back by hand. It never leaves this device and is never pruned.',
+			)
+			.addToggle((t) =>
+				t
+					.setValue(this.plugin.settings.history)
+					.onChange((v) => this.set('history', v)),
 			);
 
 		new Setting(containerEl)

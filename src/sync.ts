@@ -13,6 +13,7 @@
 
 import { Notice, TFile, Vault, normalizePath } from 'obsidian';
 import type SolidSyncPlugin from './main';
+import { History, sha256Hex } from './history';
 import type { PodConfig } from './settings';
 import {
 	anonymousFetch,
@@ -417,15 +418,6 @@ async function writeFile(
 	);
 }
 
-/** SHA-256 hex digest, of raw pod bytes — Web Crypto only, no dependency. */
-async function sha256Hex(data: string | ArrayBuffer): Promise<string> {
-	const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : data;
-	const digest = await crypto.subtle.digest('SHA-256', bytes);
-	return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join(
-		'',
-	);
-}
-
 /**
  * Both sides changed since the last sync — but only their timestamps are known to
  * differ, and a re-save with no edit or a pod re-serialising a resource moves a
@@ -570,6 +562,18 @@ async function syncPod(
 	const vault = plugin.app.vault;
 	const state: SyncState = plugin.state;
 
+	// Local history: whatever this run overwrites or deletes is stored first. A
+	// failed backup throws out of the path's branch, which the loop below reports as
+	// a skip — the path keeps both its copies.
+	const hist = plugin.settings.history
+		? new History(
+				vault.adapter,
+				`${vault.configDir}/plugins/solid-sync/history`,
+				root,
+				(path, message) => report.skipped.push(`${path} (${message})`),
+			)
+		: null;
+
 	// Left by a pod repointed at another container while keeping its folder. Dropped
 	// before anything reads them, so every branch below sees the folder as this pod
 	// has never synced it — which, for the container now configured, it has not.
@@ -665,6 +669,18 @@ async function syncPod(
 		}
 	}
 
+	// Before anything below can change a file: what is here now is the starting point.
+	// A failure costs the baseline only (retried next run); each overwrite or deletion
+	// still stores its own bytes first.
+	if (hist) {
+		for (const { path, message } of await hist.baseline(
+			`${root}|${prefix}`,
+			[...local.keys()],
+		)) {
+			report.skipped.push(`${path} (history baseline: ${message})`);
+		}
+	}
+
 	// A leftover of the old container that the new one does not have. It is a mirror
 	// of a resource this folder no longer syncs, byte for byte as we wrote it, and
 	// left on disk it would be read next run as a note the user wrote and pushed into
@@ -674,8 +690,14 @@ async function syncPod(
 		const file =
 			remote.has(path) || frozen(path) ? null : vault.getFileByPath(path);
 		if (!file) continue;
-		await plugin.app.fileManager.trashFile(file);
-		report.deletedLocal++;
+		try {
+			const before = (await hist?.keepLocal(path)) ?? null;
+			await plugin.app.fileManager.trashFile(file);
+			report.deletedLocal++;
+			await hist?.log(path, 'deleted-local', before, null);
+		} catch (e) {
+			report.skipped.push(`${path} (${(e as Error).message})`);
+		}
 	}
 
 	// A renamed or unmounted folder makes every note look deleted at once. Refuse to
@@ -737,6 +759,7 @@ async function syncPod(
 						`${path} (local edit, fenced source block no longer parses)`,
 					);
 				} else {
+					const before = (await hist?.keepPod(fetcher, prev.url)) ?? null;
 					const status = await push(
 						fetcher,
 						vault,
@@ -748,6 +771,7 @@ async function syncPod(
 					if (status === null) {
 						pushedPaths.push(path);
 						report.pushed++;
+						await hist?.log(path, 'pushed', before, state[path]?.hash ?? null);
 					} else {
 						markUnpushable(state, path, prev.url, f.stat.mtime, r.modified);
 						report.skipped.push(`${path} (local edit, PUT refused: ${status})`);
@@ -774,7 +798,9 @@ async function syncPod(
 							? podText(entry.kind, remote.content)
 							: null;
 					if (mine !== null && mine === theirs) {
+						const before = (await hist?.keepLocal(path)) ?? null;
 						local = await writeFile(vault, path, remote.content);
+						await hist?.log(path, 'pulled', before, hist && (await sha256Hex(remote.content)));
 					} else if (prev && prev.hash && prev.hash === remote.hash) {
 						// The pod's bytes still hash to what we last synced, so despite
 						// the real-looking byte difference above, the pod has not
@@ -787,8 +813,13 @@ async function syncPod(
 					} else {
 						// Named after the pod revision, so repeated syncs refresh one copy
 						// instead of breeding a new file every run.
-						await writeFile(vault, conflictPath(path, r.modified), remote.content);
+						const copy = conflictPath(path, r.modified);
+						// A copy left by an earlier run is overwritten too.
+						await hist?.keepLocal(copy);
+						const mineHash = (await hist?.keepLocal(path)) ?? null;
+						await writeFile(vault, copy, remote.content);
 						report.conflicts.push(path);
+						await hist?.log(path, 'conflict', mineHash, hist && (await sha256Hex(remote.content)));
 					}
 				}
 				// Mark each side as seen whether or not a copy was written. The note
@@ -801,7 +832,7 @@ async function syncPod(
 					hash: remote.hash,
 				};
 			} else if (podChanged) {
-				await pull(vault, fetcher, entry, path, state, report);
+				await pull(vault, fetcher, entry, path, state, report, hist);
 			} else if (localChanged) {
 				await pushLocalEdit();
 			}
@@ -814,7 +845,15 @@ async function syncPod(
 							? `${path} (many notes missing at once, pod left untouched)`
 							: `${path} (deleted locally, kept on pod)`,
 					);
-				} else if ((await fetcher(r.url, { method: 'DELETE' })).ok) {
+				} else if (
+					await (async () => {
+						// The pod's bytes are saved before the DELETE is sent, or it is not sent.
+						const before = (await hist?.keepPod(fetcher, r.url)) ?? null;
+						const ok = (await fetcher(r.url, { method: 'DELETE' })).ok;
+						if (ok) await hist?.log(path, 'deleted-pod', before, null);
+						return ok;
+					})()
+				) {
 					delete state[path];
 					report.deletedRemote++;
 					deletedPaths.push(path);
@@ -824,14 +863,16 @@ async function syncPod(
 					report.skipped.push(`${path} (deleted locally, pod refused)`);
 				}
 			} else {
-				await pull(vault, fetcher, entry, path, state, report);
+				await pull(vault, fetcher, entry, path, state, report, hist);
 			}
 		} else if (!entry && f) {
 			if (prev) {
 				// Deleted on the pod since the last sync — recoverable from trash.
+				const before = (await hist?.keepLocal(path)) ?? null;
 				await plugin.app.fileManager.trashFile(f);
 				delete state[path];
 				report.deletedLocal++;
+				await hist?.log(path, 'deleted-local', before, null);
 			} else if (!writable) {
 				report.skipped.push(
 					`${path} (new note, ${authenticated ? 'no write access per pod root' : 'no credentials'})`,
@@ -847,6 +888,7 @@ async function syncPod(
 				if (status === null) {
 					pushedPaths.push(path);
 					report.pushed++;
+					await hist?.log(path, 'pushed', null, state[path]?.hash ?? null);
 				} else {
 					report.skipped.push(`${path} (new note, PUT refused: ${status})`);
 				}
@@ -1011,12 +1053,14 @@ async function pull(
 	path: string,
 	state: SyncState,
 	report: Report,
+	hist: History | null,
 ) {
 	const remote = await readRemote(fetcher, r, kind);
 	if (remote === null) {
 		report.skipped.push(`${r.url} (no read access)`);
 		return;
 	}
+	const before = (await hist?.keepLocal(path)) ?? null;
 	state[path] = {
 		url: r.url,
 		pod: r.modified,
@@ -1024,6 +1068,7 @@ async function pull(
 		hash: remote.hash,
 	};
 	report.pulled++;
+	await hist?.log(path, 'pulled', before, hist && (await sha256Hex(remote.content)));
 }
 
 /**
