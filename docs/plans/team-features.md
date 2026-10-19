@@ -176,3 +176,48 @@ the operator, so it can.
 
 Still open: the list's URL and shape (to agree with Nicolas), and what the plugin
 does when a row it added disappears from the list.
+
+### Proposed contract (suggested by Claude, 2026-10-19, not yet agreed)
+
+**Where the list lives.** A JSON resource on a pod, e.g.
+`https://pod.nicolasdb.eu/hyperscope/team.json`, whose `.acl` lets team members read
+it. The plugin reads it with the token it already has, so the website needs no API
+and no login of its own for this: it edits one file and its `.acl`. Adding someone
+to the team is then two writes by the website: their WebID into the list, and into
+the `.acl`s of the pods they may reach.
+
+**Shape.**
+```json
+{
+  "version": 1,
+  "members": [
+    { "name": "alexandre", "webId": "https://pod.nicolasdb.eu/alex/profile/card#me" },
+    { "name": "nicolas", "webId": "https://pod.nicolasdb.eu/nicolasdb/profile/card#me" }
+  ],
+  "pods": [
+    { "url": "https://pod.nicolasdb.eu/hyperscope/vault/", "folder": "projects" },
+    { "url": "https://pod.nicolasdb.eu/nicolasdb/", "folder": "team/nicolas/pod" }
+  ]
+}
+```
+- `members` replaces the Team members setting; `name` is what `share:` uses.
+- `pods` are the same rows as the plugin's `PodConfig` (`url`, `folder`). No
+  `access` field: the plugin already reads it from `WAC-Allow`, which is the truth
+  where the list could be stale.
+- One list for the whole team. A pod a member cannot read is skipped quietly for
+  them, so the website does not need a list per member. The member's own pod is
+  not in the list; it is the one row they add themselves (or the plugin adds from
+  their WebID, `team/<name>`).
+- `version` lets the plugin refuse a shape it does not know instead of misreading it.
+
+**Plugin side.**
+- A `teamList` setting holds the URL. It is the same for everyone, so it can ship in
+  the generic zip's `data.json` without credentials.
+- Read on every sync; a row the plugin added carries `fromTeam: true`, so hand-added
+  rows are never touched.
+- A row gone from the list stops syncing; its local files stay. Never deletes a
+  local file because a row vanished.
+- The list unreadable (offline, 403) → keep the last rows, one skipped line.
+
+**To decide.** That the website writes to a pod rather than serving its own URL;
+where `team.json` sits; whether the plugin adds the member's own pod from the WebID.
