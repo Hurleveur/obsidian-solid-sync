@@ -27,17 +27,10 @@ const f = await createFetcher(new URL(POD).origin, id, secret);
 const ROOT = new URL('ur-scratch/', POD).href;
 const WEBID = new URL('profile/card#me', POD).href;
 const SEED = ['open/a.md', 'locked/b.md', 'locked/c.md', 'ro/d.md'];
-for (const n of SEED) {
-	const res = await f(`${ROOT}${n}`, {
-		method: 'PUT',
-		headers: { 'content-type': 'text/markdown' },
-		body: `# ${n}\n`,
-	});
-	assert.ok(res.ok, `seeding ${n} (${res.status})`);
-}
 
-// An ACL naming only the modes given, for us. The owner keeps Control over ACLs
-// whatever they say, which is how the suite takes them off again.
+// An ACL naming only the modes given, for us. A local CSS lets the pod owner write
+// any ACL whatever it says (OwnerPermissionReader), but not DELETE one: that needs
+// Write on the container too, which these ACLs take away.
 const acl = (container, modes) =>
 	f(`${ROOT}${container}.acl`, {
 		method: 'PUT',
@@ -46,6 +39,23 @@ const acl = (container, modes) =>
 <#me> a acl:Authorization; acl:agent <${WEBID}>;
   acl:accessTo <./>; acl:default <./>; acl:mode ${modes}.`,
 	});
+
+// So unlocking first restores Write, then removes the ACL to inherit again.
+const unlock = async (container) => {
+	const res = await acl(container, 'acl:Read, acl:Write, acl:Control');
+	return res.ok ? f(`${ROOT}${container}.acl`, { method: 'DELETE' }) : res;
+};
+
+// A run that died mid-suite leaves its locks behind, and seeding would hit them.
+for (const c of ['locked/', 'ro/']) await unlock(c);
+for (const n of SEED) {
+	const res = await f(`${ROOT}${n}`, {
+		method: 'PUT',
+		headers: { 'content-type': 'text/markdown' },
+		body: `# ${n}\n`,
+	});
+	assert.ok(res.ok, `seeding ${n} (${res.status})`);
+}
 
 const ok = (n) => console.log(`  ok  ${n}`);
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'unreadable-vault-'));
@@ -105,7 +115,7 @@ try {
 	ok('a 403 folder freezes its notes instead of trashing them');
 
 	// --- 2. the network dropping on one container ------------------------------
-	assert.ok((await f(`${ROOT}locked/.acl`, { method: 'DELETE' })).ok, 'unlocking');
+	assert.ok((await unlock('locked/')).ok, 'unlocking');
 	dropNetwork((u) => u.startsWith(`${ROOT}locked/`));
 	console.log('2. network drop  :', await runSync(plugin));
 	globalThis.fetch = realFetch;
@@ -144,8 +154,8 @@ try {
 	ok('a refused write says 403, not "no write access"');
 } finally {
 	globalThis.fetch = realFetch;
-	await f(`${ROOT}ro/.acl`, { method: 'DELETE' });
-	await f(`${ROOT}locked/.acl`, { method: 'DELETE' });
+	await unlock('ro/');
+	await unlock('locked/');
 	for (const n of [...SEED, 'locked/new.md', 'ro/new.md']) {
 		await f(`${ROOT}${n}`, { method: 'DELETE' });
 	}
