@@ -83,7 +83,26 @@ Decided 2026-10-19: `share: [nicolas, neil]` grants read, `share-write: [...]` w
 by team name resolved to a WebID through the member list (chunk 3). Notes first;
 folders (folder note → container `.acl`) after.
 
-Still open: does a pull write the pod's real ACL back into the property.
+Still open (Alexandre's call): does a pull write the pod's real ACL back into the
+property. The property sits in the note's text, so it already travels between
+devices with the note; write-back only matters when an ACL changes outside the
+plugin (another Solid app, the server's admin).
+- For it: the property never lies. Without it, a note can show `share: [neil]`
+  while the pod lets someone else read it, and the property is the only place
+  the team looks.
+- Against it: an ACL change does not change the note, so no pull notices it;
+  catching one means reading every note's `.acl` on every run (≈200 extra
+  requests for the office vault). Only someone with Control can read an `.acl`,
+  so only the owner could write back. Rewriting a note because its ACL changed
+  edits its text, which pushes it again and can collide with a real edit. An
+  ACL can name WebIDs outside the member list (the `claude-alex` agent), which
+  team names cannot express. And when the property and the ACL both changed,
+  one must win.
+- Suggested by Claude: no write-back for now. The property is the request; the
+  plugin applies it when the note is pushed. Before overwriting an `.acl` it
+  compares it with what it last wrote, and if someone else changed it, it leaves
+  it and says so in the skipped list. A "who can read this note" command can read
+  the ACL on demand later if it is missed.
 
 **What the servers do (checked 2026-10-19).**
 - Local CSS 7.2: deleting an `.acl` needs Write on its container as well as
