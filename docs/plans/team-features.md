@@ -83,7 +83,8 @@ Decided 2026-10-19: `share: [nicolas, neil]` grants read, `share-write: [...]` w
 by team name resolved to a WebID through the member list (chunk 3). Notes first;
 folders (folder note → container `.acl`) after.
 
-Still open (Alexandre's call): does a pull write the pod's real ACL back into the
+Decided 2026-10-19: no write-back for now; the plugin warns instead, as suggested
+below. The question was whether a pull writes the pod's real ACL back into the
 property. The property sits in the note's text, so it already travels between
 devices with the note; write-back only matters when an ACL changes outside the
 plugin (another Solid app, the server's admin).
