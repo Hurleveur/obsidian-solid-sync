@@ -229,6 +229,8 @@ Decided 2026-10-19:
   and the whole pod, never a subfolder (`team/nicolas`, not `team/nicolas/pod`).
   A hand-added row with the same URL is taken over: its folder moves to the list's.
 
-Still open: whether `alexandre` becomes `alex`. The list's `name` sets the folder,
-the `share:` name and the claude-office identity (`team/<name>/tasks.md`,
-`activity/`), which must agree, so a rename touches all three on every device.
+- Names stay as they are (`alexandre`, not `alex`). The list's `name` sets the folder,
+  the `share:` name and the claude-office identity (`team/<name>/tasks.md`,
+  `activity/`), which must agree, so a rename would touch all three on every device.
+
+Next: split into build chunks and build, starting 2026-10-20.
