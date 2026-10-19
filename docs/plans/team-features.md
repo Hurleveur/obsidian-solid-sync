@@ -89,7 +89,14 @@ Notes: built 2026-10-19 (`src/share.ts`, `test/share.mjs` against a local CSS).
 Applied on push only, own pod only. Checked live 2026-10-19 with 0.6.0 on
 `pod.nicolasdb.eu`: `share` naming the `claude-alex` agent let it read the note,
 and removing the property refused it again; nothing skipped. Write grants were not
-checked live. Still to do: folders.
+checked live.
+
+Folders: built 2026-10-19. A folder note (`Folder/Folder.md`, the Folder Notes
+plugin's default) shares its folder through the container's `.acl`, with
+`acl:default` so later notes inherit it. Decided 2026-10-19: the pod's top folder
+note is refused, since unsharing it would fall back to the server's rules, not the
+owner's, and a bad write there locks the owner out of the whole pod; and a shared
+folder replaces what it inherits rather than adding to it. Not checked live.
 
 Decided 2026-10-19: no write-back for now; the plugin warns instead, as suggested
 below. The question was whether a pull writes the pod's real ACL back into the

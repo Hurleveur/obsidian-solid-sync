@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Vault } from './obsidian-stub.mjs';
-import { runSync, createFetcher, ownPod, wantedAccess, parseMembers } from './sync.bundle.mjs';
+import { runSync, createFetcher, ownPod, wantedAccess, parseMembers, sharedTarget, applySharing } from './sync.bundle.mjs';
 
 const POD = process.env.POD_URL;
 const { POD_ID, POD_SECRET, GUEST_ID, GUEST_SECRET } = process.env;
@@ -80,6 +80,14 @@ try {
 	assert.ok(!sneaky.read[0].includes('>') && !sneaky.read[0].includes(' '), 'an IRI cannot be closed early');
 	assert.equal(ownPod('https://pod.example/alex/profile/card#me'), 'https://pod.example/alex/');
 	ok('properties resolve to WebIDs, and a value cannot break out of its IRI');
+
+	const u = 'https://pod.example/alex/a/b/b.md';
+	assert.equal(sharedTarget('P/a/b/b.md', u), 'https://pod.example/alex/a/b/');
+	assert.equal(sharedTarget('P/a/b/c.md', 'https://pod.example/alex/a/b/c.md'), 'https://pod.example/alex/a/b/c.md');
+	assert.equal(sharedTarget('b.md', 'https://pod.example/alex/b.md'), 'https://pod.example/alex/b.md');
+	const top = await applySharing(owner, ownPod(owner.webId), { read: [guest.webId], write: [] }, undefined);
+	assert.match(top.skip ?? '', /top of your pod/);
+	ok('a folder note governs its folder; the top of the pod is refused');
 
 	// The pod folder must exist before a sync will push into it.
 	const made = await owner(ROOT, { method: 'PUT', headers: { 'content-type': 'text/turtle' }, body: '' });
@@ -167,7 +175,33 @@ try {
 	assert.equal(await aclVersion('sh-write.md'), null, 'ACL deleted');
 	assert.equal(await status(guest, 'sh-write.md'), 403);
 	ok('a note pulled since it was shared can still be unshared');
+
+	// --- 8. a folder note shares its folder and what is in it ---------------------
+	fs.mkdirSync(path.join(root, 'Pod', 'sh-dir'));
+	note('sh-dir/sh-dir.md', 'share: [guest]');
+	note('sh-dir/inner.md');
+	await sync('8. share folder');
+	assert.equal(skipFor('sh-dir/sh-dir.md'), undefined);
+	assert.ok(await aclVersion('sh-dir/'), 'the folder has its own ACL');
+	assert.equal(await aclVersion('sh-dir/sh-dir.md'), null, 'the folder note has none of its own');
+	assert.equal(await status(guest, 'sh-dir/inner.md'), 200, 'guest reads a note inside');
+	assert.equal(await status(guest, 'sh-dir/'), 200, 'and lists the folder');
+	assert.equal(await guestWrite('sh-dir/inner.md'), 403, 'read only');
+	assert.equal(await status(guest, 'sh-private.md'), 403, 'outside the folder stays private');
+	note('sh-dir/later.md');
+	await sync('8. new note inside');
+	assert.equal(await status(guest, 'sh-dir/later.md'), 200, 'a note added later is shared too');
+	note('sh-dir/sh-dir.md');
+	await sync('8. unshare folder');
+	assert.equal(await aclVersion('sh-dir/'), null, 'folder ACL deleted');
+	assert.equal(await status(guest, 'sh-dir/inner.md'), 403, 'guest refused again');
+	assert.equal(await status(owner, 'sh-dir/inner.md'), 200, 'owner still reads');
+	ok('a folder note shares the whole folder, and unsharing hands it back');
 } finally {
+	for (const p of ['sh-dir/sh-dir.md', 'sh-dir/inner.md', 'sh-dir/later.md', 'sh-dir/']) {
+		await owner(`${ROOT}${p}.acl`, { method: 'DELETE' });
+		await owner(`${ROOT}${p}`, { method: 'DELETE' });
+	}
 	for (const p of ['sh-read.md', 'sh-write.md', 'sh-private.md', 'sh-pulled.md']) {
 		await owner(`${ROOT}${p}.acl`, { method: 'DELETE' });
 		await owner(`${ROOT}${p}`, { method: 'DELETE' });

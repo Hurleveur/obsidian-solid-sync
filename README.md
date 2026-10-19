@@ -333,8 +333,16 @@ note's own access list (`.acl`) on the pod: you with full control, and the peopl
 named. Removing both properties deletes that list, so the note is back to whatever its
 folder allows. Notes beside it are not affected.
 
+A **folder note** shares its whole folder instead: the note named like its folder and
+inside it (`business/business.md`), as the Folder Notes plugin makes them. Everything
+in the folder, including notes added later, gets the same access. The note at the top
+of your pod is the exception: the plugin skips it and names it in the skip list.
+Sharing the whole pod is left to your pod provider's own tools, because a mistake in
+the pod's top access list locks you out of everything in it.
+
 - **It replaces the folder's access, it does not add to it.** A note shared with Neil
-  inside a folder Nicolas can read is no longer readable by Nicolas.
+  inside a folder Nicolas can read is no longer readable by Nicolas. The same holds
+  one level up: a shared folder no longer follows what the folder above it allows.
 - **Only your own pod.** A note in someone else's pod is skipped with a reason.
 - **Only edits made on this device.** Properties that arrive in a pull were written by
   whoever could edit the note; applying them would let anyone with write access hand

@@ -14,7 +14,7 @@
 import { Notice, TFile, Vault, normalizePath } from 'obsidian';
 import type SolidSyncPlugin from './main';
 import { History, sha256Hex } from './history';
-import { applySharing, parseMembers, wantedAccess, type ShareRecord } from './share';
+import { applySharing, parseMembers, sharedTarget, wantedAccess, type ShareRecord } from './share';
 import type { PodConfig } from './settings';
 import {
 	anonymousFetch,
@@ -933,7 +933,8 @@ async function syncPod(
 				report.skipped.push(`${path} (sharing not applied: ${wanted})`);
 				continue;
 			}
-			const { record, skip } = await applySharing(fetcher, entry.url, wanted, entry.share);
+			const target = sharedTarget(path, entry.url);
+			const { record, skip } = await applySharing(fetcher, target, wanted, entry.share);
 			if (record) entry.share = record.key || record.etag ? record : undefined;
 			if (skip) report.skipped.push(`${path} (${skip})`);
 		} catch (e) {

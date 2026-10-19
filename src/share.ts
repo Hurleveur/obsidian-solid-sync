@@ -1,7 +1,8 @@
 /**
  * Sharing a note from its properties: `share: [neil]` lets those people read it,
  * `share-write: [...]` lets them edit it too. The plugin turns that into the note's
- * own `.acl` on the pod when the note is pushed.
+ * own `.acl` on the pod when the note is pushed. A folder note (`Folder/Folder.md`)
+ * shares its folder and everything in it instead.
  *
  * A note's own `.acl` replaces its folder's entirely, so every one written here names
  * the pod's owner with full control: the server's owner override cannot be relied on
@@ -98,10 +99,24 @@ export const shareKey = (w: Wanted) =>
  */
 export const ownPod = (webId: string) => new URL('../', webId).href;
 
-function aclTurtle(owner: string, note: string, w: Wanted): string {
+/**
+ * The resource a pushed note's properties govern: the note, or for a folder note
+ * (`Folder/Folder.md`) its folder. shortcut: assumes the Folder Notes plugin's
+ * default naming inside the folder; read its settings if a vault names them otherwise.
+ */
+export function sharedTarget(path: string, noteUrl: string): string {
+	const parts = path.split('/');
+	return parts.length > 1 && parts[parts.length - 1] === `${parts[parts.length - 2]}.md`
+		? new URL('./', noteUrl).href
+		: noteUrl;
+}
+
+function aclTurtle(owner: string, target: string, w: Wanted): string {
+	// A folder's rules also cover what is inside it, now and later (acl:default).
+	const scope = target.endsWith('/') ? `acl:accessTo <${target}>; acl:default <${target}>` : `acl:accessTo <${target}>`;
 	const rule = (id: string, agents: string[], modes: string) =>
 		`<#${id}> a acl:Authorization; acl:agent ${agents.map((a) => `<${a}>`).join(', ')};\n` +
-		`  acl:accessTo <${note}>; acl:mode ${modes}.\n`;
+		`  ${scope}; acl:mode ${modes}.\n`;
 	return (
 		'@prefix acl: <http://www.w3.org/ns/auth/acl#>.\n' +
 		rule('owner', [owner], 'acl:Read, acl:Write, acl:Control') +
@@ -122,9 +137,10 @@ async function aclVersion(fetcher: Fetcher, aclUrl: string): Promise<string | nu
 }
 
 /**
- * Brings a pushed note's `.acl` in line with what its properties ask for. Returns the
- * record to keep and, when the properties were not applied, why. Throws only on a
- * network error, which the caller reports for this note alone.
+ * Brings the `.acl` of a pushed note, or of the folder it is the note of, in line
+ * with what its properties ask for. Returns the record to keep and, when the
+ * properties were not applied, why. Throws only on a network error, which the caller
+ * reports for this note alone.
  *
  * An `.acl` that changed since this device last wrote it is left as it is and
  * reported once; the record takes its version, so the next edit of the note's
@@ -132,7 +148,7 @@ async function aclVersion(fetcher: Fetcher, aclUrl: string): Promise<string | nu
  */
 export async function applySharing(
 	fetcher: Fetcher,
-	noteUrl: string,
+	target: string,
 	wanted: Wanted,
 	prev: ShareRecord | undefined,
 ): Promise<{ record?: ShareRecord; skip?: string }> {
@@ -140,14 +156,19 @@ export async function applySharing(
 	if (key === (prev?.key ?? '')) return {};
 	const owner = fetcher.webId;
 	if (!owner) return { skip: 'sharing not applied: the login token names no WebID' };
-	if (!noteUrl.startsWith(ownPod(owner))) {
+	if (!target.startsWith(ownPod(owner))) {
 		return { skip: 'sharing not applied: only notes in your own pod can be shared' };
 	}
+	// Above the pod's top `.acl` sits the server's, not the owner's, so unsharing has
+	// nothing of theirs to fall back to, and one bad write locks them out of the pod.
+	if (target === ownPod(owner)) {
+		return { skip: 'sharing not applied: the top of your pod is not shared from a note' };
+	}
 
-	const head = await fetcher(noteUrl, { method: 'HEAD', headers: NO_CACHE });
+	const head = await fetcher(target, { method: 'HEAD', headers: NO_CACHE });
 	const link = /<([^>]*)>\s*;\s*rel="?acl"?/.exec(head.headers.get('link') ?? '')?.[1];
 	if (!link) return { skip: 'sharing not applied: the pod names no ACL for it' };
-	const aclUrl = new URL(link, noteUrl).href;
+	const aclUrl = new URL(link, target).href;
 
 	const found = await aclVersion(fetcher, aclUrl);
 	if (found !== (prev?.etag ?? null)) {
@@ -160,7 +181,7 @@ export async function applySharing(
 		? await fetcher(aclUrl, {
 				method: 'PUT',
 				headers: { 'content-type': 'text/turtle' },
-				body: aclTurtle(owner, noteUrl, wanted),
+				body: aclTurtle(owner, target, wanted),
 			})
 		: found === null
 			? null
