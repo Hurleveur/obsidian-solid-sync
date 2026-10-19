@@ -195,7 +195,24 @@ export class Setting {
 	}
 }
 
-export class Plugin {}
+// Just enough of the host for `onload()` to run; `test/startup.mjs` drives events.
+export class Plugin {
+	constructor(app) {
+		this.app = app;
+		this.data = null;
+	}
+	registerEvent() {}
+	register() {}
+	addRibbonIcon() {}
+	addCommand() {}
+	addSettingTab() {}
+	async loadData() {
+		return this.data;
+	}
+	async saveData(d) {
+		this.data = d;
+	}
+}
 export class App {}
 export class TFile {}
 

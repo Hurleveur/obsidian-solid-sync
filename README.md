@@ -504,10 +504,12 @@ POD_URL=… POD_ID=… POD_SECRET=… node test/ignore-sync.mjs
 
 Trigger rules, access parsing, settings migration, content comparison, the restore
 list, ignore-pattern shapes, the vault root as a folder, what a removed pod takes
-with it, and the settings tab's section order and confirm dialogs, no network needed:
+with it, the settings tab's section order and confirm dialogs, and startup scheduling one
+sync rather than one per file, no network needed:
 
 ```bash
 node test/trigger.mjs
+node test/startup.mjs
 node test/access.mjs
 node test/settings-ui.mjs
 node test/ignore.mjs

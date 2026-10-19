@@ -49,22 +49,24 @@ export default class SolidSyncPlugin extends Plugin {
 		});
 		this.addSettingTab(new SolidSyncSettingTab(this.app, this));
 
-		const changed = (file: TAbstractFile) => this.scheduleSync(file.path);
-		this.registerEvent(this.app.vault.on('create', changed));
-		this.registerEvent(this.app.vault.on('modify', changed));
-		this.registerEvent(this.app.vault.on('delete', changed));
-		this.registerEvent(
-			this.app.vault.on('rename', (file, oldPath: string) => {
-				// A rename is a delete plus a create: either side may be in the folder.
-				this.scheduleSync(oldPath);
-				changed(file);
-			}),
-		);
 		this.register(() => window.clearTimeout(this.pending));
 
-		if (this.settings.syncOnStartup && this.settings.pods.length) {
-			this.app.workspace.onLayoutReady(() => this.sync());
-		}
+		// Until layout-ready Obsidian fires `create` for every existing file, and each
+		// one would schedule a sync on top of the startup one.
+		this.app.workspace.onLayoutReady(() => {
+			const changed = (file: TAbstractFile) => this.scheduleSync(file.path);
+			this.registerEvent(this.app.vault.on('create', changed));
+			this.registerEvent(this.app.vault.on('modify', changed));
+			this.registerEvent(this.app.vault.on('delete', changed));
+			this.registerEvent(
+				this.app.vault.on('rename', (file, oldPath: string) => {
+					// A rename is a delete plus a create: either side may be in the folder.
+					this.scheduleSync(oldPath);
+					changed(file);
+				}),
+			);
+			if (this.settings.syncOnStartup && this.settings.pods.length) void this.sync();
+		});
 	}
 
 	/** Debounced sync in response to a vault change. */
@@ -97,6 +99,8 @@ export default class SolidSyncPlugin extends Plugin {
 		}
 		this.syncing = true;
 		this.missedDuringSync = false;
+		// This run covers any edit still waiting on its debounce.
+		window.clearTimeout(this.pending);
 		const notice = new Notice('Syncing pod…', 0);
 		try {
 			const result = await runSync(this);
