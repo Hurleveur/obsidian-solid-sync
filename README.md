@@ -255,6 +255,30 @@ skipped.
 deletions and syncs, pulling back everything the pods still have. It touches nothing
 that is already in the vault, and nothing on the pods.
 
+## Sync log
+
+Without git, nothing says who changed a shared note. So after each sync, the plugin
+appends one line for every note this device uploaded or deleted on the pod to
+`_sync-log/<name>.md` inside the synced folder, then uploads that file:
+
+```
+- 2026-10-19T16:40:12Z pushed projects/kanban.md
+- 2026-10-19T16:40:12Z deleted old/draft.md
+```
+
+`<name>` is the first part of your WebID's path (`https://pod.example/alex/profile/card#me`
+gives `alex.md`), so each person writes only their own file. Pulls are not logged — they
+are someone else's push, already in that person's file. The log is not counted in the
+sync summary and does not itself trigger a sync.
+
+It is on by default; turn it off with **Keep a sync log** in the settings. A pod you
+cannot write gets no log. If the log cannot be written or uploaded, the run still
+finishes and the problem shows in the skip list.
+
+It only records what this plugin did. Changes made by other apps straight to the pod
+are not logged, and there is no undo: the log says what happened, it does not keep the
+old text.
+
 ## Sharing it
 
 A plugin is two files in `<vault>/.obsidian/plugins/solid-sync/`: `main.js` and
@@ -415,6 +439,14 @@ on the next run:
 
 ```bash
 POD_URL=… POD_ID=… POD_SECRET=… node test/conflict.mjs
+```
+
+The sync log — writes `sl-*` resources. Checks that pushes and pod deletions are
+appended below earlier lines, that pulls, a read-only pod, a refused log and the
+off switch write nothing, and that the log neither pulls back nor starts a sync:
+
+```bash
+POD_URL=… POD_ID=… POD_SECRET=… node test/synclog.mjs
 ```
 
 Ignore rules through a whole sync, with the vault root as the folder — writes `ig-*`

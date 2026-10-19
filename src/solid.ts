@@ -17,7 +17,11 @@ export interface FetchResponse {
 	arrayBuffer(): Promise<ArrayBuffer>;
 }
 
-export type Fetcher = (url: string, init?: RequestInit) => Promise<FetchResponse>;
+export type Fetcher = {
+	(url: string, init?: RequestInit): Promise<FetchResponse>;
+	/** Who the token says we are. Absent for the anonymous fetcher. */
+	webId?: string;
+};
 
 export interface PodResource {
 	url: string;
@@ -150,7 +154,19 @@ export async function createFetcher(
 			}),
 		);
 
-	return async (url, init = {}) => {
+	// Read off the token we already hold rather than asking the pod again: the
+	// issuer put it there to say who this client acts as.
+	let webId: string | undefined;
+	try {
+		const claims = JSON.parse(
+			atob(token.split('.')[1]!.replace(/-/g, '+').replace(/_/g, '/')),
+		) as { webid?: string };
+		webId = claims.webid;
+	} catch {
+		// An opaque token carries no claims; the caller reports that it cannot name us.
+	}
+
+	const fetcher: Fetcher = async (url, init = {}) => {
 		const method = init.method ?? 'GET';
 		const res = await send(url, init, method);
 		// A pod that does not honour our issuer answers 401 to everything, so
@@ -160,6 +176,8 @@ export async function createFetcher(
 		mintedAt = Date.now();
 		return send(url, init, method);
 	};
+	fetcher.webId = webId;
+	return fetcher;
 }
 
 /** A 401 sooner than this after minting is a refusal, not an expiry. */

@@ -26,6 +26,8 @@ export interface SolidSyncSettings {
 	pushDeletions: boolean;
 	syncOnStartup: boolean;
 	syncOnChange: boolean;
+	/** Append what this device pushed or deleted to `_sync-log/<you>.md` in each pod folder. */
+	syncLog: boolean;
 	/** Files larger than this are left alone on both sides. 0 disables the limit. */
 	maxFileMB: number;
 	/**
@@ -44,6 +46,7 @@ export const DEFAULT_SETTINGS: SolidSyncSettings = {
 	pushDeletions: false,
 	syncOnStartup: false,
 	syncOnChange: false,
+	syncLog: true,
 	maxFileMB: 10,
 	ignore: [],
 };
@@ -488,6 +491,17 @@ export class SolidSyncSettingTab extends PluginSettingTab {
 				t
 					.setValue(this.plugin.settings.syncOnChange)
 					.onChange((v) => this.set('syncOnChange', v)),
+			);
+
+		new Setting(containerEl)
+			.setName('Keep a sync log')
+			.setDesc(
+				'After each sync, notes this device uploaded or deleted on a pod you can write to are listed in _sync-log/ inside the folder, one file per person, so a team can see who changed what and when. Changes made by other apps are not recorded.',
+			)
+			.addToggle((t) =>
+				t
+					.setValue(this.plugin.settings.syncLog)
+					.onChange((v) => this.set('syncLog', v)),
 			);
 
 		new Setting(containerEl)

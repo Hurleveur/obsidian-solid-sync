@@ -24,6 +24,9 @@ import {
 	type PodResource,
 } from './solid';
 
+/** Per-pod-folder directory of sync logs, one `<writer>.md` per person. */
+const LOG_DIR = '_sync-log';
+
 export interface FileState {
 	url: string;
 	pod: string;
@@ -202,7 +205,9 @@ export function isSyncTrigger(
 	const prefix = podPrefix(folder);
 	if (!path.startsWith(prefix)) return false;
 	if (ignored?.(path, prefix)) return false;
-	return !CONFLICT_COPY.test(path);
+	// The sync log is written by the run itself (and pulled from teammates), so
+	// it must not schedule another one.
+	return !CONFLICT_COPY.test(path) && !path.startsWith(prefix + LOG_DIR + '/');
 }
 
 /**
@@ -695,6 +700,7 @@ async function syncPod(
 
 	// --- decide per path ------------------------------------------------------
 	const pushedPaths: string[] = [];
+	const deletedPaths: string[] = [];
 	const syncPath = async (path: string) => {
 		const entry = remote.get(path);
 		const r = entry?.r;
@@ -811,6 +817,7 @@ async function syncPod(
 				} else if ((await fetcher(r.url, { method: 'DELETE' })).ok) {
 					delete state[path];
 					report.deletedRemote++;
+					deletedPaths.push(path);
 				} else {
 					// Keep the state entry: dropping it would make the next run read
 					// the surviving pod copy as new and pull the note back silently.
@@ -870,11 +877,17 @@ async function syncPod(
 	// alone — `push` already recorded them from the mtime and bytes it actually
 	// sent, and re-reading `file.stat.mtime` here would pick up an edit that
 	// landed after the PUT and mark it synced without ever pushing it.
-	if (pushedPaths.length) {
+	//
+	// The log goes first, so its own push is refreshed with the rest — left as it
+	// was, the next run would read our own log as changed on the pod and pull it.
+	const logged = plugin.settings.syncLog && writable
+		? await appendLog(plugin, fetcher, root, prefix, pushedPaths, deletedPaths, report)
+		: null;
+	if (pushedPaths.length || logged) {
 		const fresh = new Map(
 			(await walk(fetcher, root)).resources.map((r) => [r.url, r]),
 		);
-		for (const path of pushedPaths) {
+		for (const path of logged ? [...pushedPaths, logged] : pushedPaths) {
 			const entry = state[path];
 			if (entry) entry.pod = fresh.get(entry.url)?.modified ?? '';
 		}
@@ -884,6 +897,64 @@ async function syncPod(
 		report.skipped.push(
 			`${url} (listing failed: ${reason}, local copies left as they are)`,
 		);
+	}
+}
+
+/**
+ * Appends this run's pushes and deletions to `<folder>/_sync-log/<writer>.md` and
+ * uploads it, so a team without git can still see who changed what. Returns the
+ * log's vault path once it is on the pod, else null — and never throws: the notes
+ * themselves are already synced, and a failed log must not cost the run.
+ *
+ * One file per writer, so two people never write the same resource. The log is not
+ * logged, and is not counted: it is ours, not a note the user sent.
+ */
+async function appendLog(
+	plugin: SolidSyncPlugin,
+	fetcher: Fetcher,
+	root: string,
+	prefix: string,
+	pushed: string[],
+	deleted: string[],
+	report: Report,
+): Promise<string | null> {
+	const ownLog = (p: string) => p.startsWith(prefix + LOG_DIR + '/');
+	const at = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
+	const lines = [
+		...pushed.filter((p) => !ownLog(p)).map((p) => `- ${at} pushed ${p.slice(prefix.length)}`),
+		...deleted.map((p) => `- ${at} deleted ${p.slice(prefix.length)}`),
+	];
+	if (!lines.length) return null;
+	const label = `${prefix}${LOG_DIR}`;
+	try {
+		if (!fetcher.webId) throw new Error('the login token does not name a WebID');
+		const url = new URL(fetcher.webId);
+		const writer = (decodeURIComponent(url.pathname.split('/')[1] ?? '') || url.hostname)
+			.replace(/[\\/:*?"<>|]/g, '_');
+		const path = `${label}/${writer}.md`;
+		const vault = plugin.app.vault;
+		// Both checks, as in `writeFile`: the index and the disk disagree.
+		const file = vault.getFileByPath(path);
+		const old = file
+			? await vault.read(file)
+			: (await vault.adapter.exists(path))
+				? await vault.adapter.read(path)
+				: '';
+		await writeFile(vault, path, old + (old && !old.endsWith('\n') ? '\n' : '') + lines.join('\n') + '\n');
+		const written = vault.getFileByPath(path);
+		if (!written) throw new Error('not in the vault index yet');
+		const status = await push(
+			fetcher,
+			vault,
+			written,
+			root + `${LOG_DIR}/${encodeURIComponent(writer)}.md`,
+			plugin.state,
+		);
+		if (status !== null) throw new Error(`PUT refused: ${status}`);
+		return path;
+	} catch (e) {
+		report.skipped.push(`${label} (sync log: ${(e as Error).message})`);
+		return null;
 	}
 }
 
