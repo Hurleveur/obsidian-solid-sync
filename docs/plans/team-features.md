@@ -220,13 +220,16 @@ A roster WebID must be http(s) and a nick must match the backoffice's own rule
 **Not yet checked live.** `alex/profile/card#me` gets 403 on `membres.ttl`, so on
 Alexandre's device the roster only adds a skip line until he is accepted. Expected
 on `pod.nicolasdb.eu`, to check by trial:
-- Nicolas's roster WebID may be `hyperscope_ndb/…`, not `nicolasdb/…`. If so a new
-  row `team/nicolas` appears for `hyperscope_ndb/` beside the hand row for
-  `nicolasdb/` at `team/nicolas/pod`.
+- The hand row for `nicolasdb/` moved from `team/nicolas/pod` to `team/nicolas` on
+  2026-10-20, on Omarchy only. It had never synced: its root gives alex 403. If the
+  roster names Nicolas `hyperscope_ndb/…` instead, its `team/nicolas` row clashes with
+  that hand row and is skipped with a line saying so.
 - The projects pod, `hyperscope/vault/`, is not a member's pod, so it stays a hand
   row.
-- Notes from the git era under `team/nicolas/` would sit inside a read-only row and
-  be listed as skipped (`new note, no write access`) on every run.
+- The git-era notes under `team/nicolas/` (`activity/`, `tasks.md`, `profile.md`)
+  now sit inside the `nicolasdb/` row. While its root is 403 nothing moves. Once
+  alex can read it they are new local notes: pushed into Nicolas's pod if alex can
+  write there, listed as skipped on every run if not.
 
 Next: Alexandre is accepted through the backoffice; then a sync on his device shows
 whether the rows above appear.
