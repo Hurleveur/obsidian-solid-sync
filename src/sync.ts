@@ -16,6 +16,7 @@ import type SolidSyncPlugin from './main';
 import { History, sha256Hex } from './history';
 import { applySharing, parseMembers, sharedTarget, wantedAccess, type ShareRecord } from './share';
 import type { PodConfig } from './settings';
+import { applyRoster } from './team';
 import {
 	anonymousFetch,
 	canWriteFrom,
@@ -479,10 +480,9 @@ export function staleBindings(
 }
 
 export async function runSync(plugin: SolidSyncPlugin): Promise<string> {
-	const { issuer, clientId, clientSecret, pods } = plugin.settings;
-	const configured = pods.filter((p) => p.url && p.folder);
-	const first = configured[0];
-	if (!first) {
+	const { issuer, clientId, clientSecret, roster } = plugin.settings;
+	const first = plugin.settings.pods.find((p) => p.url && p.folder);
+	if (!first && !roster) {
 		throw new Error('Add a pod container URL and a vault folder first.');
 	}
 
@@ -491,7 +491,7 @@ export async function runSync(plugin: SolidSyncPlugin): Promise<string> {
 	// this issuer, so the token minted here is what we present everywhere.
 	const fetcher: Fetcher = authenticated
 		? await createFetcher(
-				issuer || new URL(first.url).origin,
+				issuer || new URL(first?.url ?? roster).origin,
 				clientId,
 				clientSecret,
 			)
@@ -506,6 +506,10 @@ export async function runSync(plugin: SolidSyncPlugin): Promise<string> {
 		skipped: [],
 		ignored: 0,
 	};
+
+	if (roster) await applyRoster(plugin, fetcher, report.skipped);
+	const { pods } = plugin.settings;
+	const configured = pods.filter((p) => p.url && p.folder);
 
 	// A half-filled row is easy to leave behind after selecting Add pod, and
 	// silently syncing nothing looks identical to the pod being empty.
@@ -922,7 +926,8 @@ async function syncPod(
 	// Only notes pushed from here: a property that arrived in a pull was set by
 	// whoever could edit the note, and Write must not grant access (see share.ts).
 	// Settings saved before `members` existed lack it; this must not cost the pod.
-	const members = parseMembers(plugin.settings.members ?? []);
+	// Hand-written lines last, so they win over a roster nick of the same name.
+	const members = parseMembers([...(plugin.settings.team ?? []), ...(plugin.settings.members ?? [])]);
 	for (const path of pushedPaths) {
 		const entry = state[path];
 		const file = vault.getFileByPath(path);

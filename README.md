@@ -324,9 +324,10 @@ share-write: [neil]         # may read and edit it
 ---
 ```
 
-Each name comes from **Team members** in the settings, one per line, a name and that
-person's WebID (`neil https://pod.example/neil/profile/card#me`). A WebID can also be
-written in the property itself.
+Each name comes from the [team roster](#team-roster), or from **Team members** in the
+settings, one per line, a name and that person's WebID
+(`neil https://pod.example/neil/profile/card#me`). A name in both means the Team members
+line. A WebID can also be written in the property itself.
 
 The plugin applies the properties when this device uploads the note, by writing the
 note's own access list (`.acl`) on the pod: you with full control, and the people
@@ -354,7 +355,32 @@ the pod's top access list locks you out of everything in it.
   Change the note's sharing properties again to replace it.
 
 The properties are not rewritten from the pod: they say what was asked, not what
-another app may have changed since. Folders cannot be shared this way yet.
+another app may have changed since.
+
+## Team roster
+
+A team that keeps its member list on a pod can hand it to the plugin once, and
+everyone's pod then syncs without being added one by one. Paste the list's address
+into **Team roster** in the settings, for example
+`https://pod.example/team/membres.ttl`.
+
+The list is the one [solid-backoffice](https://github.com/nicolasdb/solid-backoffice)
+writes when an admin accepts someone: a `foaf:member` line naming each person's WebID,
+and a `foaf:nick` line giving each a short name. On every sync the plugin reads it and:
+
+- adds each member's pod as a row synced at `team/<short name>`, unless a row already
+  syncs that pod;
+- lets `share:` and `share-write:` name members by their short name;
+- removes a row it added once the list stops naming that person. Their notes stay in
+  the vault; only the syncing stops.
+
+Rows you added by hand are never changed, and a row the plugin added can be edited
+like any other. What each pod lets you read or write is still up to that pod: being
+on the list grants nothing.
+
+The list is usually readable by members only. When it cannot be read (offline, or
+you have not been accepted yet), the last rows stay as they were and the skip list
+says so.
 
 ## Sharing it
 
@@ -535,6 +561,17 @@ that a property value cannot add its own grant:
 
 ```bash
 POD_URL=… POD_ID=… POD_SECRET=… GUEST_ID=… GUEST_SECRET=… node test/share.mjs
+```
+
+Team roster — writes `tm-*` resources in the first pod and rewrites the second pod's
+top access list so the first account can read it, so both pods must be throwaway
+(two accounts in `seed.json`). Checks that the list's members arrive at
+`team/<short name>`, that a pod already in a row gets no second one, that short names
+work in `share:`, that an unreadable list keeps the rows, and that a member removed
+from the list stops syncing while their notes stay:
+
+```bash
+POD_URL=… POD_ID=… POD_SECRET=… MEMBER_POD=… MEMBER_ID=… MEMBER_SECRET=… node test/team.mjs
 ```
 
 Local history — writes `hi-*` resources into two containers of one scratch pod. Checks

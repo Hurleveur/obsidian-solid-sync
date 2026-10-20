@@ -74,6 +74,7 @@ assert.deepEqual(
 		'Maximum file size (MB)',
 		'Ignore',
 		'Team members',
+		'Team roster',
 		'Deleted notes',
 		'Delete on pod when a note is deleted',
 		'Restore deleted notes',
@@ -106,6 +107,13 @@ assert.match(
 await ignoreBox().changed('  \n\n# only a comment\n');
 assert.deepEqual(plugin.settings.ignore, ['# only a comment'], 'blank lines dropped');
 assert.match(ignoreNote(), /^1 pattern\. 0 of 4 files/, 'a comment matches nothing');
+
+assert.equal(plugin.settings.roster, '', 'no roster by default');
+await rows()
+	.find((s) => s.name === 'Team roster')
+	.components.find((c) => c.kind === 'text')
+	.changed('  https://pod.example/team/membres.ttl ');
+assert.equal(plugin.settings.roster, 'https://pod.example/team/membres.ttl');
 
 // The trash icon only asks — the pod goes when the confirm is accepted.
 const trash = (name) =>

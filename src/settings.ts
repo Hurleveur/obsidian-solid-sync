@@ -15,6 +15,8 @@ export interface PodConfig {
 	folder: string;
 	/** What the last sync found we could do here. Discovered, never set by hand. */
 	access?: 'read' | 'write';
+	/** Added from the team roster, and removed when the roster stops listing it. */
+	roster?: boolean;
 }
 
 export interface SolidSyncSettings {
@@ -40,6 +42,10 @@ export interface SolidSyncSettings {
 	ignore: string[];
 	/** `name WebID` per line: who a note's `share` and `share-write` may name. */
 	members: string[];
+	/** A collective's `membres.ttl`: each member's pod is synced at `team/<nick>`. */
+	roster: string;
+	/** `nick WebID` per member, from the last roster read. Discovered, never set by hand. */
+	team: string[];
 }
 
 export const DEFAULT_SETTINGS: SolidSyncSettings = {
@@ -55,6 +61,8 @@ export const DEFAULT_SETTINGS: SolidSyncSettings = {
 	maxFileMB: 10,
 	ignore: [],
 	members: [],
+	roster: '',
+	team: [],
 };
 
 /** Settings written before pods were a list. Read once, then dropped. */
@@ -78,6 +86,7 @@ export function migrateSettings(
 	if (!Array.isArray(settings.pods)) settings.pods = [];
 	if (!Array.isArray(settings.ignore)) settings.ignore = [];
 	if (!Array.isArray(settings.members)) settings.members = [];
+	if (!Array.isArray(settings.team)) settings.team = [];
 	if (podUrl && !settings.pods.length) {
 		settings.pods = [{ url: podUrl, folder: folder ?? 'Pod' }];
 		settings.issuer ||= new URL(podUrl).origin;
@@ -445,9 +454,9 @@ export class SolidSyncSettingTab extends PluginSettingTab {
 				btn.setButtonText('Log in').onClick(() => {
 					// Your account lives on one server; that one mints the token
 					// every pod in the list is then addressed with.
-					const url = this.plugin.settings.pods[0]?.url;
+					const url = this.plugin.settings.pods[0]?.url || this.plugin.settings.roster;
 					if (!url) {
-						new Notice('Add your own pod first.');
+						new Notice('Add your own pod or a team roster first.');
 						return;
 					}
 					const issuer = new URL(url).origin;
@@ -584,6 +593,20 @@ export class SolidSyncSettingTab extends PluginSettingTab {
 						);
 					});
 			});
+
+		new Setting(containerEl)
+			.setName('Team roster')
+			.setDesc(
+				"Your team's member list (a membres.ttl kept by the team's website). Each sync reads it, adds each member's pod at team/<their short name>, and lets share: name them. A member it no longer lists stops syncing; their notes stay. Readable by members only.",
+			)
+			.addText((t) =>
+				t
+					.setPlaceholder('https://pod.example/team/membres.ttl')
+					.setValue(this.plugin.settings.roster)
+					.onChange(async (v) => {
+						await this.set('roster', v.trim());
+					}),
+			);
 
 		new Setting(containerEl).setName('Deleted notes').setHeading();
 
