@@ -101,7 +101,9 @@ export default class SolidSyncPlugin extends Plugin {
 		this.missedDuringSync = false;
 		// This run covers any edit still waiting on its debounce.
 		window.clearTimeout(this.pending);
-		const notice = new Notice('Syncing pod…', 0);
+		const notice = this.settings.notifySummary
+			? new Notice('Syncing pod…', 0)
+			: null;
 		try {
 			const result = await runSync(this);
 			this.lastRun = {
@@ -109,19 +111,21 @@ export default class SolidSyncPlugin extends Plugin {
 				result,
 				skipped: this.lastSkipped,
 			};
-			notice.setMessage(`Solid sync: ${result}`);
+			notice?.setMessage(`Solid sync: ${result}`);
 		} catch (e) {
 			this.lastRun = {
 				at: new Date().toISOString(),
 				error: (e as Error).message,
 			};
-			notice.setMessage(`Solid sync failed: ${(e as Error).message}`);
+			const msg = `Solid sync failed: ${(e as Error).message}`;
+			if (notice) notice.setMessage(msg);
+			else new Notice(msg, 8000);
 			console.error(e);
 		} finally {
 			this.syncing = false;
 			this.quietUntil = Date.now() + QUIET_AFTER_SYNC_MS;
 			await this.saveSettings();
-			window.setTimeout(() => notice.hide(), 8000);
+			window.setTimeout(() => notice?.hide(), 8000);
 			if (this.missedDuringSync) {
 				// Same debounce as any other change; an unchanged file won't push
 				// again (state already carries its synced mtime and hash), so this

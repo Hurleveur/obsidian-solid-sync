@@ -181,6 +181,9 @@ vault root there can be thousands of them.
 
 There is no polling. Pod-side changes arrive on the next sync, so leave **Sync after changes** on if you edit from more than one place.
 
+Each run shows a notice while it works, then its counts. Turn **Show sync summary** off to
+sync silently; a failed run and a conflict still show.
+
 ## How it works
 
 - `.md` resources sync both ways, byte for byte, with no injected frontmatter — except

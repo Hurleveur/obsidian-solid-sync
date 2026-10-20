@@ -28,6 +28,8 @@ export interface SolidSyncSettings {
 	pushDeletions: boolean;
 	syncOnStartup: boolean;
 	syncOnChange: boolean;
+	/** Show the "Syncing pod…" notice and its counts. Failures and conflicts always show. */
+	notifySummary: boolean;
 	/** Append what this device pushed or deleted to `_sync-log/<you>.md` in each pod folder. */
 	syncLog: boolean;
 	/** Keep every file the sync overwrites or deletes, on this device only. */
@@ -56,6 +58,7 @@ export const DEFAULT_SETTINGS: SolidSyncSettings = {
 	pushDeletions: false,
 	syncOnStartup: false,
 	syncOnChange: false,
+	notifySummary: true,
 	syncLog: true,
 	history: true,
 	maxFileMB: 10,
@@ -507,6 +510,17 @@ export class SolidSyncSettingTab extends PluginSettingTab {
 				t
 					.setValue(this.plugin.settings.syncOnChange)
 					.onChange((v) => this.set('syncOnChange', v)),
+			);
+
+		new Setting(containerEl)
+			.setName('Show sync summary')
+			.setDesc(
+				'Shows a notice while each sync runs and the counts it pulled and pushed. Failures and conflicts are shown either way.',
+			)
+			.addToggle((t) =>
+				t
+					.setValue(this.plugin.settings.notifySummary)
+					.onChange((v) => this.set('notifySummary', v)),
 			);
 
 		new Setting(containerEl)
