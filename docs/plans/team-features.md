@@ -221,9 +221,12 @@ A roster WebID must be http(s) and a nick must match the backoffice's own rule
 Alexandre's device the roster only adds a skip line until he is accepted. Expected
 on `pod.nicolasdb.eu`, to check by trial:
 - The hand row for `nicolasdb/` moved from `team/nicolas/pod` to `team/nicolas` on
-  2026-10-20, on Omarchy only. It had never synced: its root gives alex 403. If the
-  roster names Nicolas `hyperscope_ndb/…` instead, its `team/nicolas` row clashes with
-  that hand row and is skipped with a line saying so.
+  2026-10-20, on Omarchy only. Its notes came from the pod through the plugin, but on
+  2026-10-20 `nicolasdb/` refused alex everything, profile included (403; anonymous
+  401). `hyperscope_ndb/` is public-read, its profile has `foaf:name "nicolasdb"` and
+  `org:memberOf` HyperScope, and its `shared/` holds the same files: Nicolas's pod
+  appears to have moved there. Repointing the hand row to `hyperscope_ndb/` avoids the
+  roster's `team/nicolas` row clashing with it.
 - The projects pod, `hyperscope/vault/`, is not a member's pod, so it stays a hand
   row.
 - The git-era notes under `team/nicolas/` (`activity/`, `tasks.md`, `profile.md`)
