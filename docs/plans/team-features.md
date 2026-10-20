@@ -159,7 +159,7 @@ plugin (another Solid app, the server's admin).
 - A note's ACL is at the URL its `Link: rel="acl"` header names (`<note>.acl` on
   CSS). Read it from the header and never build it by hand.
 
-## Chunk 3 — vault preset handed out from a website (design pending)
+## Chunk 3 — vault preset handed out from a website (roster built, zip pending)
 
 **Constraint.** Obsidian never downloads a missing plugin on its own: a plugin runs only
 if its `main.js` and `manifest.json` sit in `.obsidian/plugins/<id>/`. "Fetch, don't
@@ -202,14 +202,31 @@ Decided 2026-10-19: the plugin reads the roster Nicolas's backoffice already kee
 - Names follow the nicks: if Alexandre's nick is not `alexandre`, the folder is renamed
   rather than the nick (decided 2026-10-19).
 
-**Blockers, both Nicolas's.**
-- `alex/profile/card#me` gets 403 on `membres.ttl`, and its profile declares no
-  `org:memberOf`: Alexandre has not joined HyperScope through the backoffice. Nobody's
-  device can be tested until one member besides Nicolas has.
-- The projects pod, `hyperscope/vault/`, is not described in `config.ttl`. It needs
-  one property (e.g. `hs:vault <vault/>`, mapped to `projects/`), which only the owner
-  writes.
-- The example roster names Nicolas as `hyperscope_ndb`, not `nicolasdb`. If the live
-  one does, his row points at `hyperscope_ndb/`, not the pod synced today.
+Built 2026-10-20 (`src/team.ts`, `test/team.mjs` against a local CSS), changed from
+the plan above in three ways:
+- The setting is the roster's own URL, not `config.ttl`'s. `config.ttl` would only
+  have pointed at it, since `hs:vault` is not there either. Reading `config.ttl` can
+  be added if a team's roster ever moves.
+- A hand row with the same pod URL is left as it is rather than taken over and moved
+  to `team/<nick>`; the roster only adds rows for pods no row syncs yet. Moving a row
+  means moving its notes in the vault, which was not needed to get the team synced.
+  Renaming `team/nicolas/pod` and the others stays a later, separate step.
+- The Turtle reader handles prefixes, IRIs, prefixed names, plain strings and
+  `; , .`, and refuses anything else as unreadable, rather than reading part of it.
+  No dependency added.
+A roster WebID must be http(s) and a nick must match the backoffice's own rule
+(`[a-z0-9][a-z0-9-]{0,39}`), since both end up in a URL or a vault path.
 
-Next: Alexandre joins through the backoffice; then build, starting 2026-10-20.
+**Not yet checked live.** `alex/profile/card#me` gets 403 on `membres.ttl`, so on
+Alexandre's device the roster only adds a skip line until he is accepted. Expected
+on `pod.nicolasdb.eu`, to check by trial:
+- Nicolas's roster WebID may be `hyperscope_ndb/…`, not `nicolasdb/…`. If so a new
+  row `team/nicolas` appears for `hyperscope_ndb/` beside the hand row for
+  `nicolasdb/` at `team/nicolas/pod`.
+- The projects pod, `hyperscope/vault/`, is not a member's pod, so it stays a hand
+  row.
+- Notes from the git era under `team/nicolas/` would sit inside a read-only row and
+  be listed as skipped (`new note, no write access`) on every run.
+
+Next: Alexandre is accepted through the backoffice; then a sync on his device shows
+whether the rows above appear.
