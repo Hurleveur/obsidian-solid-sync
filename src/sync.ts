@@ -729,6 +729,7 @@ async function syncPod(
 	// left on disk it would be read next run as a note the user wrote and pushed into
 	// a pod it never came from. Trash rather than delete: recoverable is the right
 	// answer for anything we remove on the user's behalf.
+	const trashedPaths: string[] = [];
 	for (const path of carriedOver) {
 		const file =
 			remote.has(path) || frozen(path) ? null : vault.getFileByPath(path);
@@ -737,6 +738,7 @@ async function syncPod(
 			const before = (await hist?.keepLocal(path)) ?? null;
 			await plugin.app.fileManager.trashFile(file);
 			report.deletedLocal++;
+			trashedPaths.push(path);
 			await hist?.log(path, 'deleted-local', before, null);
 		} catch (e) {
 			report.skipped.push(`${path} (${(e as Error).message})`);
@@ -915,6 +917,7 @@ async function syncPod(
 				await plugin.app.fileManager.trashFile(f);
 				delete state[path];
 				report.deletedLocal++;
+				trashedPaths.push(path);
 				await hist?.log(path, 'deleted-local', before, null);
 			} else if (!writable) {
 				report.skipped.push(
@@ -955,6 +958,7 @@ async function syncPod(
 			report.skipped.push(`${path} (${(e as Error).message})`);
 		}
 	}
+	await pruneEmptyFolders(plugin, trashedPaths, prefix, report);
 
 	// Only notes pushed from here: a property that arrived in a pull was set by
 	// whoever could edit the note, and Write must not grant access (see share.ts).
@@ -1079,6 +1083,38 @@ function urlFor(root: string, prefix: string, path: string): string {
 	// raw, the server escapes them, and the DPoP proof signed over the raw
 	// URL stops matching — a 401 that reads as "no write access".
 	return root + path.slice(prefix.length).split('/').map(encodeURIComponent).join('/');
+}
+
+/**
+ * The vault folders this run emptied by trashing notes, trashed in turn: a folder
+ * deleted whole on the pod otherwise stays behind as an empty husk. Only ancestors of
+ * a trashed note, and never the pod folder itself — an empty folder the user made is
+ * theirs. Emptiness is read from the disk, which sees dotfiles the index does not.
+ */
+async function pruneEmptyFolders(
+	plugin: SolidSyncPlugin,
+	trashed: string[],
+	prefix: string,
+	report: Report,
+): Promise<void> {
+	const parent = (p: string) => p.slice(0, Math.max(p.lastIndexOf('/'), 0));
+	const folders = new Set<string>();
+	for (const path of trashed) {
+		for (let d = parent(path); d && `${d}/`.length > prefix.length; d = parent(d)) folders.add(d);
+	}
+	// Deepest first, so a parent is judged after its emptied children are gone.
+	for (const d of [...folders].sort((a, b) => b.length - a.length)) {
+		try {
+			const folder = plugin.app.vault.getFolderByPath(d);
+			if (!folder) continue;
+			const { files, folders: subfolders } = await plugin.app.vault.adapter.list(d);
+			if (files.length || subfolders.length) continue;
+			await plugin.app.fileManager.trashFile(folder);
+			report.deletedLocal++;
+		} catch (e) {
+			report.skipped.push(`${d}/ (empty folder left: ${(e as Error).message})`);
+		}
+	}
 }
 
 function parentUrl(url: string): string {

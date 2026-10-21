@@ -243,7 +243,7 @@ no clock comparison between machines is needed. Assumes one editor at a time.
 | Changed on both, same bytes | Nothing. A re-save with no edit, or a pod re-serialising a resource, moves a timestamp without moving a byte — content is compared before anything is written. For a fenced resource only the fenced body counts, so a change to how the wrapper is written is never read as a change to the resource |
 | Changed on both, but the pod still holds what was last synced | Pushed. Only the pod's timestamp moved — each file's state keeps a hash of the bytes last sent or received, so a stale timestamp (a cached listing, most often) is never read as someone else's edit |
 | Changed on both, different bytes | Nothing is overwritten. The pod version is saved as `note (pod conflict …).md` beside yours — same for attachments, keeping their extension; edit your copy to resolve |
-| Deleted on pod | Local note moved to trash, recoverable |
+| Deleted on pod | Local note moved to trash, recoverable. A folder left empty by this goes to trash too; an empty folder you made yourself, and the synced folder itself, stay |
 | Deleted locally | Pod copy kept, unless **Delete on pod** is enabled. It is not pulled again — see **Restore deleted notes** below |
 | Many notes missing at once | All pod deletions refused — a renamed or unmounted folder cannot empty your pod. Counted per pod, so adding pods never weakens the guard |
 | Pod refuses the write | Reported as skipped with the status the pod gave (`PUT refused: 403`), that pod's copy left alone, the run carries on. `no write access per pod root` instead means the pod root said you may only read, so nothing was sent |
@@ -556,6 +556,14 @@ writes `nm-*` resources. Checks that each one is pushed rather than reported as
 
 ```bash
 POD_URL=… POD_ID=… POD_SECRET=… node test/names.mjs
+```
+
+A folder deleted whole on the pod — writes `pr-scratch/`. Checks that the folders
+its trashed notes leave empty go to trash, and that a folder still holding a note or
+a dotfile, an empty folder the user made, and the synced folder itself all stay:
+
+```bash
+POD_URL=… POD_ID=… POD_SECRET=… node test/prune.mjs
 ```
 
 A container that stops answering — writes `ur-*` resources and ACLs under them, so a

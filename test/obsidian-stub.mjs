@@ -265,6 +265,14 @@ export class Vault {
 				if (fs.existsSync(path.join(root, to))) throw new Error(`Destination file already exists: ${to}`);
 				fs.renameSync(path.join(root, from), path.join(root, to));
 			},
+			// Disk truth, dotfiles included, as the real adapter lists them.
+			list: async (p) => {
+				const out = { files: [], folders: [] };
+				for (const e of fs.readdirSync(this.abs(p), { withFileTypes: true })) {
+					(e.isDirectory() ? out.folders : out.files).push(`${p}/${e.name}`);
+				}
+				return out;
+			},
 			stat: async (p) => {
 				if (!fs.existsSync(this.abs(p))) return null;
 				const st = fs.statSync(this.abs(p));
@@ -291,6 +299,11 @@ export class Vault {
 	}
 	async createFolder(p) {
 		fs.mkdirSync(this.abs(p), { recursive: true });
+	}
+	getFolderByPath(p) {
+		return fs.existsSync(this.abs(p)) && fs.statSync(this.abs(p)).isDirectory()
+			? { path: p, children: [] }
+			: null;
 	}
 	getFileByPath(p) {
 		if (this.unindexed.has(p)) return null;
@@ -338,8 +351,9 @@ export class Vault {
 		return this.getFiles((n) => n.endsWith('.md'));
 	}
 	trashed = [];
+	// Obsidian trashes a folder with whatever is in it.
 	trash(f) {
 		this.trashed.push(f.path);
-		fs.unlinkSync(this.abs(f.path));
+		fs.rmSync(this.abs(f.path), { recursive: true });
 	}
 }
