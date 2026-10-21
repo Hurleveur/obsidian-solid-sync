@@ -181,8 +181,9 @@ vault root there can be thousands of them.
 
 There is no polling. Pod-side changes arrive on the next sync, so leave **Sync after changes** on if you edit from more than one place.
 
-Each run shows a notice while it works, then its counts. Turn **Show sync summary** off to
-sync silently; a failed run and a conflict still show.
+A sync you start (ribbon, command, **Sync now**) shows a notice while it works, then its
+counts. An automatic run shows its outcome only when it differs from the last one shown, so
+an offline vault reports the failure once rather than after every edit. Conflicts always show.
 
 ## How it works
 

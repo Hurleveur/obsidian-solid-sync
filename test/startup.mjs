@@ -49,14 +49,15 @@ assert.equal(timers.size, 0, 'starting a run cancels the pending one');
 await run;
 assert.match(plugin.lastRun.error ?? plugin.lastRun.result, /./, 'the run finished');
 
-// With the summary off, a run that finishes shows no notice at all.
-plugin.settings.notifySummary = false;
+// An automatic run repeating the last outcome shows nothing; a manual one always does.
 const shown = [];
 const log = console.log;
 console.log = (...a) => (a[0] === '  [notice]' ? shown.push(a[1]) : log(...a));
 await plugin.sync();
+assert.match(plugin.lastRun.result ?? '', /pulled/, 'the repeat run succeeded');
+assert.deepEqual(shown, [], 'an unchanged automatic outcome showed a notice again');
+await plugin.sync(true);
 console.log = log;
-assert.match(plugin.lastRun.result ?? '', /pulled/, 'the quiet run succeeded');
-assert.deepEqual(shown, [], 'notifySummary off still showed a notice');
+assert.equal(shown.length, 2, 'a manual run must show progress and its outcome');
 
 console.log('startup: all passed');

@@ -37,15 +37,16 @@ export default class SolidSyncPlugin extends Plugin {
 	private quietUntil = 0;
 	/** A trigger-worthy edit landed while a run was already past that file. */
 	private missedDuringSync = false;
+	private lastNotice = '';
 
 	async onload() {
 		await this.loadSettings();
 
-		this.addRibbonIcon('refresh-cw', 'Sync pod', () => this.sync());
+		this.addRibbonIcon('refresh-cw', 'Sync pod', () => this.sync(true));
 		this.addCommand({
 			id: 'sync-now',
 			name: 'Sync now',
-			callback: () => this.sync(),
+			callback: () => this.sync(true),
 		});
 		this.addSettingTab(new SolidSyncSettingTab(this.app, this));
 
@@ -92,7 +93,8 @@ export default class SolidSyncPlugin extends Plugin {
 		);
 	}
 
-	async sync() {
+	/** `manual`: the user asked, so the run shows progress and its outcome even if unchanged. */
+	async sync(manual = false) {
 		if (this.syncing) {
 			new Notice('Solid sync already running.');
 			return;
@@ -101,9 +103,7 @@ export default class SolidSyncPlugin extends Plugin {
 		this.missedDuringSync = false;
 		// This run covers any edit still waiting on its debounce.
 		window.clearTimeout(this.pending);
-		const notice = this.settings.notifySummary
-			? new Notice('Syncing pod…', 0)
-			: null;
+		const notice = manual ? new Notice('Syncing pod…', 0) : null;
 		try {
 			const result = await runSync(this);
 			this.lastRun = {
@@ -111,15 +111,13 @@ export default class SolidSyncPlugin extends Plugin {
 				result,
 				skipped: this.lastSkipped,
 			};
-			notice?.setMessage(`Solid sync: ${result}`);
+			this.notify(`Solid sync: ${result}`, notice);
 		} catch (e) {
 			this.lastRun = {
 				at: new Date().toISOString(),
 				error: (e as Error).message,
 			};
-			const msg = `Solid sync failed: ${(e as Error).message}`;
-			if (notice) notice.setMessage(msg);
-			else new Notice(msg, 8000);
+			this.notify(`Solid sync failed: ${(e as Error).message}`, notice);
 			console.error(e);
 		} finally {
 			this.syncing = false;
@@ -137,6 +135,13 @@ export default class SolidSyncPlugin extends Plugin {
 				);
 			}
 		}
+	}
+
+	/** An automatic run repeating the last outcome (offline, every edit) stays silent. */
+	private notify(msg: string, notice: Notice | null) {
+		if (notice) notice.setMessage(msg);
+		else if (msg !== this.lastNotice) new Notice(msg, 8000);
+		this.lastNotice = msg;
 	}
 
 	async loadSettings() {
