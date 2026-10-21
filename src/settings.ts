@@ -265,7 +265,7 @@ class LoginModal extends Modal {
 		contentEl.empty();
 		this.setTitle('What to sync');
 		const podName = pod ? (new URL(pod).pathname.split('/').filter(Boolean).pop() ?? '') : '';
-		let folder = me ? `team/${me.nick}` : podName;
+		let folder = `team/${me?.nick ?? podName}`;
 		let withTeam = offerTeam;
 		if (pod && row) {
 			new Setting(contentEl).setName('Your pod').setDesc(`${pod} already syncs at ${row.folder}.`);

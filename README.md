@@ -58,7 +58,7 @@ Put both in `<vault>/.obsidian/plugins/solid-sync/`, then refresh the list under
    WebID.
 2. The login then offers what to sync, and **Start syncing** sets it up:
    - your pod, at a folder of this vault (`team/<your short name>` when your team
-     lists you, otherwise the pod's name). The folder is only where the notes are kept
+     lists you, otherwise `team/<the pod's name>`). The folder is only where the notes are kept
      in Obsidian; nothing on the pod changes.
    - your team, when your profile names one, with every member listed — see
      [Team roster](#team-roster).

@@ -13,8 +13,8 @@ pod row typed by hand. Asked 2026-10-21.
    entry on the account.
 3. **Setup.** The credentials are saved first, so closing the dialog here leaves you
    logged in with nothing added. The screen offers:
-   - your pod, at a folder (`team/<nick>` when your team's roster lists you, else the
-     pod's name), unless a row already syncs it;
+   - your pod, at a folder (`team/<nick>` when your team's roster lists you, else
+     `team/<pod name>`), unless a row already syncs it;
    - your team, when your profile names one, with every member's nick shown — the
      agreement to the list of people that turning team sync on is.
 

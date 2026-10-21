@@ -90,7 +90,7 @@ async function openLogin(tab, email) {
 	ok('two pods: the one picked is who the token acts as');
 
 	const folder = row(modal, 'Folder in this vault').components[0];
-	assert.equal(folder.value, 'second', 'no team: the pod name is the folder');
+	assert.equal(folder.value, 'team/second', 'no team: team/<pod name> is the folder');
 	assert.equal(row(modal, 'Folder in this vault').desc.includes(second), true);
 	await folder.changed('  ');
 	await buttonIn(modal, 'Start syncing').clicked();
