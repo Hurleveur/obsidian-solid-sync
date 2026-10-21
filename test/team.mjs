@@ -28,6 +28,15 @@ const ROSTER = new URL('tm-team/membres.ttl', POD).href;
 const OWN = new URL('tm-own/', POD).href;
 const put = (who, url, body, type = 'text/turtle') =>
 	who(url, { method: 'PUT', headers: { 'content-type': type }, body });
+const CONFIG = new URL('tm-team/config.ttl', POD).href;
+// Adds or removes the owner's `org:memberOf` the team, in the owner's real profile.
+const memberOf = (op) =>
+	owner(owner.webId.replace(/#.*/, ''), {
+		method: 'PATCH',
+		headers: { 'content-type': 'text/n3' },
+		body: `@prefix solid: <http://www.w3.org/ns/solid/terms#>.
+_:p a solid:InsertDeletePatch; solid:${op} { <${owner.webId}> <http://www.w3.org/ns/org#memberOf> <${CONFIG}#team> . }.`,
+	});
 // What solid-backoffice's addMemberText writes: one statement per line, full IRIs.
 const backoffice = (people) =>
 	'@prefix foaf: <http://xmlns.com/foaf/0.1/> .\n' +
@@ -88,6 +97,8 @@ PREFIX foaf: <http://xmlns.com/foaf/0.1/>
 <file:///etc/profile/card#me> foaf:nick "etc" .
 `;
 	assert.deepEqual(rosterMembers(hand, base), [{ webId: alice, nick: 'alice' }], 'a nick that is no folder name, or a WebID that is no web address, is dropped');
+	const twoGroups = backoffice([[alice, 'alice']]) + `<other.ttl#x> <http://xmlns.com/foaf/0.1/member> <https://pod.example/eve/profile/card#me> .\n<https://pod.example/eve/profile/card#me> <http://xmlns.com/foaf/0.1/nick> "eve" .\n`;
+	assert.deepEqual(rosterMembers(twoGroups, base, 'https://pod.example/team/config.ttl#team').map((m) => m.nick), ['alice'], "another group's member is not ours");
 	assert.throws(() => parseTriples('<a> <b> [ <c> <d> ] .', base), /unreadable Turtle/);
 	assert.throws(() => parseTriples('<a> x:b <c> .', base), /undefined prefix "x:"/);
 	assert.throws(() => parseTriples('<a> <b> <c>', base), /unreadable Turtle/);
@@ -155,10 +166,57 @@ PREFIX foaf: <http://xmlns.com/foaf/0.1/>
 	assert.deepEqual(plugin.settings.team, [`owner ${owner.webId}`]);
 	ok('a member gone from the roster stops syncing');
 
+	// --- 5. the roster found from the profile, as the backoffice finds it --------
+	// profile org:memberOf <config.ttl#team>; config.ttl hs:roster <membres.ttl>.
+	assert.ok((await put(owner, CONFIG, `<#team> <https://pod.nicolasdb.eu/hyperscope/vocab#roster> <membres.ttl> .\n`)).ok);
+	assert.ok((await put(owner, ROSTER, backoffice([[owner.webId, 'owner'], [member.webId, 'neil']]))).ok);
+	assert.ok((await memberOf('inserts')).ok, 'profile names the team');
+	plugin.settings.roster = '';
+	await sync('roster from profile');
+	assert.deepEqual(rowFor('team/neil'), { url: MEMBER_POD, folder: 'team/neil', roster: true, access: 'read' });
+	assert.deepEqual(plugin.settings.team, [`owner ${owner.webId}`, `neil ${member.webId}`]);
+	assert.ok(!plugin.lastSkipped.some((l) => l.startsWith('team roster')), 'roster read');
+	ok('roster found through org:memberOf and hs:roster');
+
+	// A fresh vault, logged in and nothing else: what the vault template hands out.
+	const freshRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'team-fresh-'));
+	const freshVault = new Vault(freshRoot);
+	const fresh = {
+		...plugin,
+		app: { vault: freshVault, fileManager: { trashFile: (file) => freshVault.trash(file) } },
+		settings: { ...plugin.settings, pods: [], team: [] },
+		state: {},
+		lastSkipped: [],
+	};
+	try {
+		await runSync(fresh);
+		assert.deepEqual(fresh.settings.pods.map((p) => p.folder), ['team/owner', 'team/neil'], 'own pod and the member pod, no row by hand');
+		assert.ok(fs.existsSync(path.join(freshRoot, 'team/neil/tm-hello.md')), 'member note pulled');
+	} finally {
+		fs.rmSync(freshRoot, { recursive: true, force: true });
+	}
+	ok('a vault with only a login gets its team');
+
+	// An unreadable config says nothing about who left.
+	const before = JSON.stringify(plugin.settings.pods);
+	assert.ok((await owner(CONFIG, { method: 'DELETE' })).ok);
+	await sync('config missing');
+	assert.equal(JSON.stringify(plugin.settings.pods), before, 'rows kept');
+	assert.match(plugin.lastSkipped.find((l) => l.startsWith('team roster')) ?? '', /^team roster from your profile \(.*config\.ttl not readable \(404\); last team kept\)$/);
+	ok('unreadable config keeps the last rows');
+
+	// Leaving the team in the profile is leaving it here.
+	assert.ok((await memberOf('deletes')).ok);
+	await sync('left the team');
+	assert.equal(rowFor('team/neil'), undefined, 'row gone');
+	assert.deepEqual(plugin.settings.team, []);
+	ok('a profile naming no team syncs no team');
+
 	console.log('\nall team checks passed');
 } finally {
+	await memberOf('deletes');
 	await owner(`${OWN}tm-shared.md.acl`, { method: 'DELETE' });
-	for (const p of ['tm-own/tm-mine.md', 'tm-own/tm-shared.md', 'tm-team/membres.ttl', 'tm-own/', 'tm-team/']) {
+	for (const p of ['tm-own/tm-mine.md', 'tm-own/tm-shared.md', 'tm-team/membres.ttl', 'tm-team/config.ttl', 'tm-own/', 'tm-team/']) {
 		await owner(new URL(p, POD).href, { method: 'DELETE' });
 	}
 	await member(`${MEMBER_POD}tm-hello.md`, { method: 'DELETE' });

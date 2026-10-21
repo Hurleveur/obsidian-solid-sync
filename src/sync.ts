@@ -488,16 +488,17 @@ export function staleBindings(
 export async function runSync(plugin: SolidSyncPlugin, scoped = false): Promise<string> {
 	const { issuer, clientId, clientSecret, roster } = plugin.settings;
 	const first = plugin.settings.pods.find((p) => p.url && p.folder);
-	if (!first && !roster) {
+	const authenticated = Boolean(clientId && clientSecret);
+	// Logged in with no rows yet, the rows come from the teams the profile names.
+	if (!first && !roster && !authenticated) {
 		throw new Error('Add a pod container URL and a vault folder first.');
 	}
 
-	const authenticated = Boolean(clientId && clientSecret);
 	// One identity for every pod: Solid-OIDC has each pod resolve our WebID back to
 	// this issuer, so the token minted here is what we present everywhere.
 	const fetcher: Fetcher = authenticated
 		? await createFetcher(
-				issuer || new URL(first?.url ?? roster).origin,
+				issuer || new URL(first?.url || roster).origin,
 				clientId,
 				clientSecret,
 			)
@@ -513,7 +514,7 @@ export async function runSync(plugin: SolidSyncPlugin, scoped = false): Promise<
 		ignored: 0,
 	};
 
-	if (roster && !scoped) await applyRoster(plugin, fetcher, report.skipped);
+	if (!scoped) await applyRoster(plugin, fetcher, report.skipped);
 	const { pods } = plugin.settings;
 	const configured = pods.filter((p) => p.url && p.folder);
 

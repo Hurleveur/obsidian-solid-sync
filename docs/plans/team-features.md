@@ -159,7 +159,7 @@ plugin (another Solid app, the server's admin).
 - A note's ACL is at the URL its `Link: rel="acl"` header names (`<note>.acl` on
   CSS). Read it from the header and never build it by hand.
 
-## Chunk 3 — vault preset handed out from a website (roster built, zip pending)
+## Chunk 3 — vault preset handed out from a website (roster built and found from the profile, zip pending)
 
 **Constraint.** Obsidian never downloads a missing plugin on its own: a plugin runs only
 if its `main.js` and `manifest.json` sit in `.obsidian/plugins/<id>/`. "Fetch, don't
@@ -234,5 +234,28 @@ on `pod.nicolasdb.eu`, to check by trial:
   alex can read it they are new local notes: pushed into Nicolas's pod if alex can
   write there, listed as skipped on every run if not.
 
-Next: Alexandre is accepted through the backoffice; then a sync on his device shows
-whether the rows above appear.
+Alexandre was accepted by 2026-10-21: `alex/profile/card#me` reads `membres.ttl`
+(200, `WAC-Allow: user="read"`), which lists `nicolas` (`hyperscope_ndb/`),
+`chabi-vdb` (`chabivdb/`) and `alex`. The `nicolasdb/` hand row was repointed to
+`hyperscope_ndb/` before then.
+
+Built 2026-10-21: the roster is found, not typed. A logged-in run reads the profile's
+`org:memberOf`, each collective's `config.ttl`, and its `hs:roster`, the walk the
+backoffice's `loadCollective` makes; the Team roster setting, when filled, replaces
+it. Members must belong to that collective (`foaf:member` from its IRI). Any of the
+three documents unreadable keeps the last team; a profile naming no collective drops
+the roster's rows. Settings are written only when the team changed. Login falls back
+to the stored `issuer`, so a vault template carrying only `issuer` needs no row:
+logging in brings the user's own pod at `team/<nick>` and every member's. Checked
+locally (`test/team.mjs` §5, seen failing without the walk and without the collective
+check) and live 2026-10-21 against `pod.nicolasdb.eu` (read only): alex's profile led
+to HyperScope's roster and its three nicks.
+
+Still open, for Nicolas:
+- `config.ttl` names no vault, so the `hyperscope/vault/` → `projects/` row stays by
+  hand (or in the template). A property such as `hs:vault` would let the walk add it.
+- Accepting grants Read on the roster and the collective's shared folders, not on
+  `vault/`, and no Write; each new member's access there is granted by hand.
+- `config.ttl` says members share by granting the collective's agent (`hs:agent`)
+  in `hs:bundleFolder`, not each other. A member's pod row at `team/<nick>` reads only
+  what that member shared with the reader; a fresh pod shows a 403 skip.

@@ -66,7 +66,7 @@ export default class SolidSyncPlugin extends Plugin {
 					changed(file);
 				}),
 			);
-			if (this.settings.syncOnStartup && (this.settings.pods.length || this.settings.roster)) void this.sync(false, true);
+			if (this.settings.syncOnStartup && (this.settings.pods.length || this.settings.roster || this.settings.clientId)) void this.sync(false, true);
 		});
 	}
 

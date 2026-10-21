@@ -4,6 +4,10 @@
  * Each member's pod becomes a row at `team/<nick>`, and each nick a name that
  * `share:` may use. The roster grants nothing; what a row can do is still the pod's
  * `.acl` (see docs/plans/team-features.md, chunk 3).
+ *
+ * The roster is found the way the backoffice finds it: the user's profile names
+ * each collective (`org:memberOf`), and the collective's `config.ttl` names its
+ * roster (`hs:roster`). The Team roster setting, when filled, replaces that walk.
  */
 
 import type SolidSyncPlugin from './main';
@@ -13,6 +17,9 @@ import { NO_CACHE, type Fetcher } from './solid';
 import { folderClash, ownedBy } from './sync';
 
 const FOAF = 'http://xmlns.com/foaf/0.1/';
+const MEMBER_OF = 'http://www.w3.org/ns/org#memberOf';
+// solid-backoffice's own namespace, provisional there too (its src/lib/vocab.ts).
+const HS_ROSTER = 'https://pod.nicolasdb.eu/hyperscope/vocab#roster';
 
 export interface Member {
 	webId: string;
@@ -104,17 +111,20 @@ export function parseTriples(text: string, base: string): [string, string, strin
 	return triples;
 }
 
-/** Everyone the roster lists with a nick. A member with none has no folder name. */
-export function rosterMembers(text: string, rosterUrl: string): Member[] {
+/**
+ * Everyone the roster lists with a nick. A member with none has no folder name.
+ * `group`, when known, is the collective the members must belong to.
+ */
+export function rosterMembers(text: string, rosterUrl: string, group?: string): Member[] {
 	const triples = parseTriples(text, rosterUrl);
 	const nicks = new Map(
 		triples.filter(([, p]) => p === `${FOAF}nick`).map(([s, , o]) => [s, o]),
 	);
 	const seen = new Set<string>();
 	const members: Member[] = [];
-	for (const [, p, webId] of triples) {
+	for (const [s, p, webId] of triples) {
 		const nick = nicks.get(webId);
-		if (p !== `${FOAF}member` || seen.has(webId) || !nick) continue;
+		if (p !== `${FOAF}member` || (group && s !== group) || seen.has(webId) || !nick) continue;
 		// A nick names a folder: the backoffice's own rule, checked again since this
 		// file is someone else's and the value ends up in a vault path.
 		if (!/^[a-z0-9][a-z0-9-]{0,39}$/.test(nick)) continue;
@@ -126,12 +136,48 @@ export function rosterMembers(text: string, rosterUrl: string): Member[] {
 	return members;
 }
 
-export async function readRoster(fetcher: Fetcher, rosterUrl: string): Promise<Member[]> {
+export async function readRoster(
+	fetcher: Fetcher,
+	rosterUrl: string,
+	group?: string,
+): Promise<Member[]> {
 	const res = await fetcher(rosterUrl, {
 		headers: { Accept: 'text/turtle', ...NO_CACHE },
 	});
 	if (!res.ok) throw new Error(`roster not readable (${res.status})`);
-	return rosterMembers(await res.text(), rosterUrl);
+	return rosterMembers(await res.text(), rosterUrl, group);
+}
+
+async function readTriples(fetcher: Fetcher, url: string): Promise<[string, string, string][]> {
+	const res = await fetcher(url, { headers: { Accept: 'text/turtle', ...NO_CACHE } });
+	if (!res.ok) throw new Error(`${url} not readable (${res.status})`);
+	return parseTriples(await res.text(), url);
+}
+
+/**
+ * The roster of each collective the profile says this WebID belongs to. A
+ * collective whose config names no roster is left out; one that cannot be read
+ * throws, since leaving it out would read as having left it.
+ * shortcut: the profile goes through the roster's small Turtle reader, so a profile
+ * with blank nodes (other providers) gives a skip line every run; take `n3` then.
+ */
+export async function discoverRosters(
+	fetcher: Fetcher,
+	webId: string,
+): Promise<{ group: string; roster: string }[]> {
+	const docOf = (iri: string) => iri.replace(/#.*/, '');
+	const profile = await readTriples(fetcher, docOf(webId));
+	const groups = new Set(
+		profile.filter(([s, p]) => s === webId && p === MEMBER_OF).map(([, , o]) => o),
+	);
+	const found: { group: string; roster: string }[] = [];
+	for (const group of groups) {
+		if (!/^https?:\/\//.test(group)) continue;
+		const config = await readTriples(fetcher, docOf(group));
+		const roster = config.find(([s, p]) => s === group && p === HS_ROSTER)?.[2];
+		if (roster && /^https?:\/\//.test(roster)) found.push({ group, roster });
+	}
+	return found;
 }
 
 /**
@@ -167,10 +213,11 @@ export const memberLines = (members: Member[]) =>
 	members.map(({ nick, webId }) => `${nick} ${webId}`);
 
 /**
- * Reads the roster and brings the pod rows and share names in line with it. An
- * unreadable roster (offline, not a member yet) keeps the last rows and names: a
+ * Reads the rosters and brings the pod rows and share names in line with them. Any
+ * unreadable one (offline, not a member yet) keeps the last rows and names: a
  * failed read says nothing about who left, and dropping rows on it would stop
- * syncing everyone's pod at once.
+ * syncing everyone's pod at once. Without the setting or a WebID there is no
+ * roster to look for, and nothing changes.
  */
 export async function applyRoster(
 	plugin: SolidSyncPlugin,
@@ -178,17 +225,29 @@ export async function applyRoster(
 	skipped: string[],
 ): Promise<void> {
 	const { roster } = plugin.settings;
-	let members: Member[];
+	if (!roster && !fetcher.webId) return;
+	const members: Member[] = [];
 	try {
-		members = await readRoster(fetcher, roster);
+		const rosters = roster
+			? [{ roster, group: undefined }]
+			: await discoverRosters(fetcher, fetcher.webId as string);
+		for (const r of rosters) {
+			for (const m of await readRoster(fetcher, r.roster, r.group)) {
+				if (!members.some((k) => k.webId === m.webId)) members.push(m);
+			}
+		}
 	} catch (e) {
-		skipped.push(`team roster ${roster} (${(e as Error).message}; last team kept)`);
+		skipped.push(`team roster ${roster || 'from your profile'} (${(e as Error).message}; last team kept)`);
 		return;
 	}
 	const merged = mergeRoster(plugin.settings.pods, members);
 	skipped.push(...merged.skipped);
+	const team = memberLines(members);
+	// Every logged-in run gets here, most with no team: write settings only on a change.
+	if (!merged.removed.length && merged.pods.length === plugin.settings.pods.length &&
+		team.join('\n') === (plugin.settings.team ?? []).join('\n')) return;
 	plugin.settings.pods = merged.pods;
-	plugin.settings.team = memberLines(members);
+	plugin.settings.team = team;
 	// The same as removing a row by hand: the notes stay, their sync history goes.
 	for (const row of merged.removed) {
 		for (const path of ownedBy(plugin.state, row.folder, merged.pods)) {

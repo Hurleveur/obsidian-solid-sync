@@ -42,7 +42,7 @@ export interface SolidSyncSettings {
 	ignore: string[];
 	/** `name WebID` per line: who a note's `share` and `share-write` may name. */
 	members: string[];
-	/** A collective's `membres.ttl`: each member's pod is synced at `team/<nick>`. */
+	/** A collective's `membres.ttl`, used instead of the ones the profile's teams name. */
 	roster: string;
 	/** `nick WebID` per member, from the last roster read. Discovered, never set by hand. */
 	team: string[];
@@ -454,7 +454,8 @@ export class SolidSyncSettingTab extends PluginSettingTab {
 				btn.setButtonText('Log in').onClick(() => {
 					// Your account lives on one server; that one mints the token
 					// every pod in the list is then addressed with.
-					const url = this.plugin.settings.pods[0]?.url || this.plugin.settings.roster;
+					const { issuer: known, pods, roster } = this.plugin.settings;
+					const url = pods[0]?.url || roster || known;
 					if (!url) {
 						new Notice('Add your own pod or a team roster first.');
 						return;
@@ -597,7 +598,7 @@ export class SolidSyncSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName('Team roster')
 			.setDesc(
-				"Your team's member list (a membres.ttl kept by the team's website). Each sync reads it, adds each member's pod at team/<their short name>, and lets share: name them. A member it no longer lists stops syncing; their notes stay. Readable by members only.",
+				"Leave empty to use the teams your profile says you belong to: each sync follows them to their member lists, adds each member's pod at team/<their short name>, and lets share: name them. A member no longer listed stops syncing; their notes stay. Fill in a member list (a membres.ttl) only for a team your profile does not name.",
 			)
 			.addText((t) =>
 				t
