@@ -87,10 +87,12 @@ export function migrateSettings(
 	const settings: SolidSyncSettings = Object.assign({}, DEFAULT_SETTINGS, rest);
 	// A saved `null` from an old build must not defeat the default, and neither must
 	// a list saved as something that is not one — both are iterated without asking.
-	if (!Array.isArray(settings.pods)) settings.pods = [];
-	if (!Array.isArray(settings.ignore)) settings.ignore = [];
-	if (!Array.isArray(settings.members)) settings.members = [];
-	if (!Array.isArray(settings.team)) settings.team = [];
+	// Copied either way: a fresh vault would otherwise push into DEFAULT_SETTINGS' own.
+	const list = <T>(v: T[]) => (Array.isArray(v) ? [...v] : []);
+	settings.pods = list(settings.pods);
+	settings.ignore = list(settings.ignore);
+	settings.members = list(settings.members);
+	settings.team = list(settings.team);
 	// Before the switch existed, filling in a roster was turning team sync on.
 	if (saved.teamSync === undefined) settings.teamSync = Boolean(settings.roster);
 	if (podUrl && !settings.pods.length) {

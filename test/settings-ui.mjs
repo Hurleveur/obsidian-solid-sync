@@ -124,6 +124,9 @@ const confirmButton = (modal, accept) =>
 // --- team sync is off until asked, and stopping it asks first ----------------
 // Adding other people's pods is a choice: nothing reads the team until the button.
 assert.equal(migrateSettings({}).teamSync, false, 'off by default');
+// A fresh vault's lists are its own: adding a pod must not change the defaults.
+migrateSettings({}).pods.push({ url: 'https://x.example/', folder: 'X' });
+assert.deepEqual(migrateSettings({}).pods, [], 'defaults untouched');
 assert.equal(migrateSettings({ roster: 'https://x.example/m.ttl' }).teamSync, true, 'a roster saved before the switch keeps syncing');
 assert.equal(migrateSettings({ roster: 'https://x.example/m.ttl', teamSync: false }).teamSync, false);
 const teamButton = () =>
