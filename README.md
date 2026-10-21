@@ -548,6 +548,15 @@ on the next run:
 POD_URL=… POD_ID=… POD_SECRET=… node test/conflict.mjs
 ```
 
+Listing a pod — writes a `wk-scratch/` tree. Checks that a level's container
+listings go out together, at most 8 at a time, and that the walk still returns
+exactly what a one-by-one walk does, in the same order, including a container
+that refuses its listing:
+
+```bash
+POD_URL=… POD_ID=… POD_SECRET=… node test/walk.mjs
+```
+
 The sync log — writes `sl-*` resources. Checks that pushes and pod deletions are
 appended below earlier lines, that pulls, a read-only pod, a refused log and the
 off switch write nothing, and that the log neither pulls back nor starts a sync:

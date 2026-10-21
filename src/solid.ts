@@ -344,6 +344,8 @@ export async function listContainer(
 	};
 }
 
+const WALK_CONCURRENCY = 8;
+
 /**
  * Walks a container recursively. Unreadable sub-containers are reported, not fatal,
  * with why: an HTTP status the pod answered, or the network error that stopped it.
@@ -360,31 +362,42 @@ export async function walk(
 }> {
 	const resources: PodResource[] = [];
 	const unreadable: { url: string; reason: string }[] = [];
-	const queue = [root];
-	const seen = new Set(queue);
+	let level = [root];
+	const seen = new Set(level);
 	let canWrite: boolean | undefined;
 
-	while (queue.length) {
-		const url = queue.shift() as string;
-		let children: PodResource[];
-		try {
-			const listing = await listContainer(fetcher, url);
-			children = listing.children;
-			if (url === root) canWrite = listing.canWrite;
-		} catch (e) {
-			const { status, message } = e as Error & { status?: number };
-			unreadable.push({
-				url,
-				reason: status ? String(status) : `network error: ${message}`,
-			});
-			continue;
+	// One listing is a full round trip, and a slow pod makes dozens of them in a row
+	// the whole wait. A level's listings go out together, a few at a time, and are
+	// read back in queue order, so the result is exactly the one-by-one walk's.
+	while (level.length) {
+		const listings: PromiseSettledResult<Awaited<ReturnType<typeof listContainer>>>[] = [];
+		for (let i = 0; i < level.length; i += WALK_CONCURRENCY) {
+			listings.push(
+				...(await Promise.allSettled(
+					level.slice(i, i + WALK_CONCURRENCY).map((url) => listContainer(fetcher, url)),
+				)),
+			);
 		}
-		for (const child of children) {
-			if (seen.has(child.url)) continue;
-			seen.add(child.url);
-			if (child.isContainer) queue.push(child.url);
-			else resources.push(child);
-		}
+		const next: string[] = [];
+		listings.forEach((listing, i) => {
+			const url = level[i] as string;
+			if (listing.status === 'rejected') {
+				const { status, message } = listing.reason as Error & { status?: number };
+				unreadable.push({
+					url,
+					reason: status ? String(status) : `network error: ${message}`,
+				});
+				return;
+			}
+			if (url === root) canWrite = listing.value.canWrite;
+			for (const child of listing.value.children) {
+				if (seen.has(child.url)) continue;
+				seen.add(child.url);
+				if (child.isContainer) next.push(child.url);
+				else resources.push(child);
+			}
+		});
+		level = next;
 	}
 	return { resources, unreadable, canWrite };
 }
