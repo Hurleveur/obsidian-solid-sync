@@ -12,7 +12,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { Vault } from './obsidian-stub.mjs';
-import { runSync, createFetcher, rosterMembers, mergeRoster, parseTriples } from './sync.bundle.mjs';
+import { runSync, createFetcher, folderName, rosterMembers, mergeRoster, parseTriples } from './sync.bundle.mjs';
 
 const POD = process.env.POD_URL;
 const { POD_ID, POD_SECRET, MEMBER_POD, MEMBER_ID, MEMBER_SECRET } = process.env;
@@ -118,6 +118,19 @@ PREFIX foaf: <http://xmlns.com/foaf/0.1/>
 	assert.deepEqual(merged.pods.map((p) => p.folder), ['By hand', 'team/bob', 'team/carol'], 'hand rows kept, gone dropped, carol added');
 	assert.deepEqual(merged.removed.map((p) => p.folder), ['team/gone']);
 	assert.match(merged.skipped[0], /^team\/bob \(team member bob: "team\/bob" is already/);
+	// Shared pods: the first at projects, the next inside it under its team's name.
+	const shared = [
+		{ url: 'https://pod.example/hs/vault/', name: 'HyperScope' },
+		{ url: 'https://pod.example/other/vault/', name: 'Other' },
+	];
+	assert.deepEqual(mergeRoster([], [], shared).pods.map((p) => [p.folder, p.roster]), [['projects', true], ['projects/Other', true]]);
+	assert.deepEqual(
+		mergeRoster([{ url: 'https://pod.example/hs/vault/', folder: 'projects' }], [], shared).pods.map((p) => p.folder),
+		['projects', 'projects/Other'],
+		'already synced by hand: kept, and the next still goes inside',
+	);
+	assert.deepEqual(mergeRoster([{ url: 'https://x.example/', folder: 'projects', roster: true }], [], shared).removed.map((p) => p.url), ['https://x.example/'], 'a shared pod no team names any more goes');
+	assert.equal(folderName('../Hyper/Scope: "x"'), 'HyperScope x');
 	ok('roster parsing and merging');
 
 	// --- 1. the member's pod arrives at team/<nick> ------------------------------

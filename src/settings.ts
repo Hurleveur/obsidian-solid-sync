@@ -1,7 +1,7 @@
 import { App, Modal, Notice, PluginSettingTab, Setting, setIcon } from 'obsidian';
 import type SolidSyncPlugin from './main';
-import { createClientCredentials, createFetcher } from './solid';
-import { findTeam, setTeam } from './team';
+import { createFetcher, logInToAccount, webIdFor, type Account } from './solid';
+import { findTeam, setTeam, VAULT_FOLDER, type Member, type SharedPod } from './team';
 import {
 	deletedLocally,
 	folderClash,
@@ -25,6 +25,8 @@ export interface SolidSyncSettings {
 	issuer: string;
 	clientId: string;
 	clientSecret: string;
+	/** Who the token acts as, for display. Saved at login. */
+	webId: string;
 	pods: PodConfig[];
 	pushDeletions: boolean;
 	syncOnStartup: boolean;
@@ -55,6 +57,7 @@ export const DEFAULT_SETTINGS: SolidSyncSettings = {
 	issuer: '',
 	clientId: '',
 	clientSecret: '',
+	webId: '',
 	pods: [],
 	pushDeletions: false,
 	syncOnStartup: false,
@@ -102,7 +105,20 @@ export function migrateSettings(
 	return settings;
 }
 
-/** Asks for pod account login once, to mint client credentials. Password is not stored. */
+/** What the login's last screen asks the tab to set up. */
+export interface LoginSetup {
+	/** Your own pod, to add as a row at `folder`; absent when a row syncs it already. */
+	pod?: { url: string; folder: string };
+	/** The team to turn team sync on with, as read during the login. */
+	team?: { members: Member[]; vaults: SharedPod[] };
+}
+
+/**
+ * Logs in, then sets up: server and password, which pod is yours (only when the
+ * account has several), then your pod's folder and your team. Exactly one token is
+ * minted, and it is saved before the last screen, so closing there leaves you logged
+ * in with nothing added. The password is used once and never stored.
+ */
 class LoginModal extends Modal {
 	private email = '';
 	private password = '';
@@ -110,10 +126,13 @@ class LoginModal extends Modal {
 	constructor(
 		app: App,
 		private issuer: string,
-		private onDone: (
+		private plugin: SolidSyncPlugin,
+		private onLogin: (
 			creds: { clientId: string; clientSecret: string },
 			issuer: string,
+			webId: string,
 		) => Promise<void>,
+		private onSetup: (setup: LoginSetup) => Promise<void>,
 	) {
 		super(app);
 	}
@@ -122,26 +141,34 @@ class LoginModal extends Modal {
 		const { contentEl } = this;
 		this.setTitle('Log in to your pod');
 		contentEl.createEl('p', {
-			text: 'Creates a token on the server that holds your account. Your password is used once and never stored.',
+			text: 'Your account is on one server. Logging in creates a token there for this vault; your password is used once and never stored.',
 		});
 
-		new Setting(contentEl).setName('Server').addText((t) =>
-			t
-				.setPlaceholder('https://pod.example.eu')
-				.setValue(this.issuer)
-				.onChange((v) => (this.issuer = v.trim())),
-		);
+		new Setting(contentEl)
+			.setName('Server')
+			.setDesc('The address of the server that holds your account.')
+			.addText((t) =>
+				t
+					.setPlaceholder('https://pod.example.eu')
+					.setValue(this.issuer)
+					.onChange((v) => (this.issuer = v.trim())),
+			);
 		new Setting(contentEl)
 			.setName('Email')
 			.addText((t) => t.onChange((v) => (this.email = v)));
+		let submit = () => {};
 		new Setting(contentEl).setName('Password').addText((t) => {
 			t.inputEl.type = 'password';
 			t.onChange((v) => (this.password = v));
+			t.inputEl.addEventListener('keydown', (e: KeyboardEvent) => {
+				if (e.key === 'Enter') submit();
+			});
 		});
 
-		new Setting(contentEl).addButton((btn) =>
+		new Setting(contentEl).addButton((btn) => {
+			submit = () => void btn.buttonEl.click();
 			btn
-				.setButtonText('Create token')
+				.setButtonText('Log in')
 				.setCta()
 				.onClick(async () => {
 					let issuer: string;
@@ -150,30 +177,168 @@ class LoginModal extends Modal {
 						if (!/^https?:$/.test(url.protocol)) throw new Error();
 						issuer = url.origin;
 					} catch {
-						new Notice('Enter the server address, like https://pod.example.eu.');
+						new Notice('Enter the address of your server first.');
 						return;
 					}
-					btn.setDisabled(true).setButtonText('Working…');
+					btn.setDisabled(true).setButtonText('Logging in…');
 					try {
-						const creds = await createClientCredentials(
-							issuer,
-							this.email,
-							this.password,
-						);
-						await this.onDone(creds, issuer);
-						new Notice('Solid credentials saved.');
-						this.close();
+						const account = await logInToAccount(issuer, this.email, this.password);
+						if (this.closed) return;
+						if (!account.webIds.length) throw new Error('No WebID found on this account.');
+						if (account.pods.length > 1) this.choosePod(issuer, account);
+						else await this.finish(issuer, account, account.pods[0]);
 					} catch (e) {
-						new Notice(
-							`Solid login failed: ${(e as Error).message}`,
-						);
-						btn.setDisabled(false).setButtonText('Create token');
+						new Notice(`Solid login failed: ${(e as Error).message}`);
+						btn.setDisabled(false).setButtonText('Log in');
+					}
+				});
+		});
+	}
+
+	/** An account with several pods: the one picked is also who the token acts as. */
+	private choosePod(issuer: string, account: Account) {
+		const { contentEl } = this;
+		contentEl.empty();
+		this.setTitle('Which pod is yours?');
+		const synced = account.pods.find((p) => this.plugin.settings.pods.some((r) => r.url === p));
+		let pod = synced ?? account.pods[0] ?? '';
+		new Setting(contentEl)
+			.setName('Your pod')
+			.setDesc('Your account has several. You act as the one you pick.')
+			.addDropdown((d) => {
+				for (const p of account.pods) d.addOption(p, p);
+				d.setValue(pod).onChange((v) => (pod = v));
+			});
+		new Setting(contentEl).addButton((btn) =>
+			btn
+				.setButtonText('Continue')
+				.setCta()
+				.onClick(async () => {
+					btn.setDisabled(true).setButtonText('Logging in…');
+					try {
+						await this.finish(issuer, account, pod);
+					} catch (e) {
+						new Notice(`Solid login failed: ${(e as Error).message}`);
+						btn.setDisabled(false).setButtonText('Continue');
 					}
 				}),
 		);
 	}
 
+	/**
+	 * Mints the one token, saves it, then offers your pod and your team. A retry after
+	 * a failed save reuses the token already minted rather than leaving it orphaned.
+	 */
+	private async finish(issuer: string, account: Account, pod?: string) {
+		const webId = webIdFor(account, pod);
+		if (!webId) throw new Error(`No WebID of this account lives in ${pod ?? 'a pod'}.`);
+		if (this.minted?.webId !== webId) {
+			this.minted = { webId, creds: await account.mint(webId) };
+		}
+		const { creds } = this.minted;
+		await this.onLogin(creds, issuer, webId);
+		if (this.closed) return;
+
+		const { pods, teamSync, roster } = this.plugin.settings;
+		const row = pod ? pods.find((p) => p.url === pod) : undefined;
+		// Best effort: a team that cannot be read is still one Team sync can retry.
+		// Read even with team sync on: it names the folder your own pod goes in.
+		let team: Awaited<ReturnType<typeof findTeam>> | undefined;
+		let teamError = '';
+		try {
+			team = await findTeam(await createFetcher(issuer, creds.clientId, creds.clientSecret), roster);
+		} catch (e) {
+			teamError = (e as Error).message;
+		}
+		if (this.closed) return;
+		const me = team?.members.find((m) => m.webId === webId);
+		const offerTeam = !teamSync && Boolean(team?.members.length);
+		if ((!pod || row) && !offerTeam) {
+			new Notice(
+				row ? `Logged in. Your pod already syncs at ${row.folder}.` : 'Logged in.',
+			);
+			this.close();
+			return;
+		}
+
+		const { contentEl } = this;
+		contentEl.empty();
+		this.setTitle('What to sync');
+		const podName = pod ? (new URL(pod).pathname.split('/').filter(Boolean).pop() ?? '') : '';
+		let folder = me ? `team/${me.nick}` : podName;
+		let withTeam = offerTeam;
+		if (pod && row) {
+			new Setting(contentEl).setName('Your pod').setDesc(`${pod} already syncs at ${row.folder}.`);
+		} else if (pod) {
+			const s = new Setting(contentEl)
+				.setName('Folder in this vault')
+				.setDesc(`Where the notes of your pod, ${pod}, are kept in Obsidian. Only this vault: nothing on the pod changes.`);
+			const note = s.descEl.createDiv();
+			s.addText((t) =>
+				t
+					.setPlaceholder('Folder, or / for the whole vault')
+					.setValue(folder)
+					.onChange((v) => {
+						folder = v.trim();
+						note.setText('');
+					}),
+			);
+			this.folderNote = note;
+		}
+		if (team && offerTeam) {
+			const nicks = team.members.map((m) => m.nick).join(', ');
+			const shared = team.vaults.length ? `, and its shared pod at ${VAULT_FOLDER}/` : '';
+			new Setting(contentEl)
+				.setName(`Sync ${team.names.join(', ')}`)
+				.setDesc(
+					`Adds the pods of its ${team.members.length} members (${nicks}) at team/<their name>${shared}, and keeps them in step as people join and leave. Each pod still decides what you may read there.`,
+				)
+				.addToggle((t) => t.setValue(withTeam).onChange((v) => (withTeam = v)));
+		} else if (teamError && !teamSync) {
+			contentEl.createEl('p', { text: `Your team could not be read (${teamError}). Team sync in the settings can try again.` });
+		}
+
+		new Setting(contentEl)
+			.addButton((btn) => btn.setButtonText('Not now').onClick(() => this.close()))
+			.addButton((btn) =>
+				btn
+					.setButtonText('Start syncing')
+					.setCta()
+					.onClick(async () => {
+						let add: LoginSetup['pod'];
+						if (pod && !row) {
+							const clash = folderClash(pods, pods.length, folder);
+							const problem = !folder
+								? 'Pick a folder for your pod.'
+								: clash
+									? `"${clash}" is already another pod's folder.`
+									: '';
+							if (problem) {
+								this.folderNote?.setText(problem);
+								this.folderNote?.addClass('mod-warning');
+								return;
+							}
+							add = { url: pod, folder };
+						}
+						btn.setDisabled(true).setButtonText('Starting…');
+						try {
+							await this.onSetup({ pod: add, team: withTeam ? team : undefined });
+							this.close();
+						} catch (e) {
+							new Notice(`Could not start syncing: ${(e as Error).message}`);
+							btn.setDisabled(false).setButtonText('Start syncing');
+						}
+					}),
+			);
+	}
+
+	private folderNote?: HTMLElement;
+	private minted?: { webId: string; creds: { clientId: string; clientSecret: string } };
+	// Closing mid-login leaves the work running; past this point it touches no screen.
+	private closed = false;
+
 	onClose() {
+		this.closed = true;
 		this.contentEl.empty();
 		this.password = '';
 	}
@@ -267,51 +432,38 @@ export class SolidSyncSettingTab extends PluginSettingTab {
 		super(app, plugin);
 	}
 
-	/** Reads the team first, so turning it on is agreeing to a list of people. */
-	private async startTeam() {
-		const { issuer, clientId, clientSecret, roster } = this.plugin.settings;
-		if (!clientId || !clientSecret) {
-			new Notice('Log in first: your profile says which team you are in.');
+	/**
+	 * On reads the team at once, so a profile naming none says so now rather than at
+	 * the next sync. Off removes the rows team sync added; notes stay, and rows added
+	 * by hand are kept. `display()` afterwards shows the toggle as it really is.
+	 */
+	private async setTeamSync(on: boolean) {
+		if (!on) {
+			await this.set('teamSync', false);
+			await setTeam(this.plugin, []);
+			this.display();
 			return;
 		}
+		const { issuer, clientId, clientSecret, roster } = this.plugin.settings;
 		let found: Awaited<ReturnType<typeof findTeam>>;
 		try {
 			found = await findTeam(await createFetcher(issuer, clientId, clientSecret), roster);
 		} catch (e) {
 			new Notice(`Could not read your team: ${(e as Error).message}`);
+			this.display();
 			return;
 		}
 		if (!found.members.length) {
 			new Notice('Your profile names no team with a member list.');
+			this.display();
 			return;
 		}
-		const nicks = found.members.map((m) => m.nick).join(', ');
-		new ConfirmModal(
-			this.app,
-			`Sync ${found.names.join(', ')}?`,
-			`Adds the pods of its ${found.members.length} members (${nicks}) at team/<their short name>, unless a row already syncs one, and keeps them in step: whoever joins is added, whoever leaves stops syncing. Each pod still decides what you may read there.`,
-			'Sync my team',
-			async () => {
-				await this.set('teamSync', true);
-				this.display();
-				await this.plugin.sync(true);
-				this.display();
-			},
-		).open();
-	}
-
-	private stopTeam() {
-		new ConfirmModal(
-			this.app,
-			'Stop syncing your team?',
-			"Removes the rows team sync added. Their notes stay in the vault; rows you added by hand are kept.",
-			'Stop',
-			async () => {
-				await this.set('teamSync', false);
-				await setTeam(this.plugin, []);
-				this.display();
-			},
-		).open();
+		await this.set('teamSync', true);
+		await setTeam(this.plugin, found.members, found.vaults);
+		new Notice(`Syncing ${found.names.join(', ')}: ${found.members.map((m) => m.nick).join(', ')}.`);
+		this.display();
+		await this.plugin.sync(true);
+		this.display();
 	}
 
 	private async set<K extends keyof SolidSyncSettings>(
@@ -364,13 +516,12 @@ export class SolidSyncSettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName('Pods')
 			.setDesc(
-				"Each container is mirrored into its own vault folder. Add any pod you can read — your own, a shared one, or a public one. A folder may sit inside another pod's folder: the innermost one owns its notes, and no other pod touches them. Use / for the whole vault, and set Ignore below before you do.",
+				"Each pod is kept in its own folder of this vault. Logging in offers your own pod; add any other you can read — a shared one, or a public one. A folder may sit inside another pod's folder: the innermost one owns its notes, and no other pod touches them. Use / for the whole vault, and set Ignore below before you do.",
 			)
 			.setHeading()
 			.addButton((btn) =>
 				btn
 					.setButtonText('Add pod')
-					.setCta()
 					.onClick(async () => {
 						pods.push({ url: '', folder: '' });
 						await this.plugin.saveSettings();
@@ -380,43 +531,54 @@ export class SolidSyncSettingTab extends PluginSettingTab {
 
 		if (!pods.length) {
 			containerEl.createEl('p', {
-				text: 'No pods yet. Add pod is the first step: paste the address of any pod you can read, pick a vault folder for it, and its notes arrive on the next sync.',
+				text: this.plugin.settings.clientId
+					? 'No pods yet. Log in again to be offered your own, or Add pod for any pod you can read.'
+					: 'No pods yet. Log in above and your own pod is offered; Add pod is for any other pod you can read.',
 			});
 			return;
 		}
 
 		pods.forEach((pod, i) => {
+			// Two rows, folder first: where the notes are in Obsidian, then where they
+			// are online. One row of two bare boxes read as two halves of one address.
 			const row = new Setting(containerEl)
-				.setName(`Pod ${i + 1}`)
-				.setDesc(accessText(pod.access));
-			// Typing saves on every keystroke; this line is where that shows.
-			const note = row.descEl.createDiv();
-			const show = (msg: string, warn: boolean) => {
-				note.setText(msg);
-				note.toggleClass('mod-warning', warn);
+				.setName(`Pod ${i + 1}: folder in this vault`)
+				.setDesc('Where its notes are kept in Obsidian. Changing it changes nothing on the pod.');
+			const web = new Setting(containerEl)
+				.setName('Pod address')
+				.setDesc(`Where the notes are stored online. ${accessText(pod.access)}`);
+			// Typing saves on every keystroke; these lines are where that shows.
+			const noteOf = (s: Setting) => {
+				const el = s.descEl.createDiv();
+				return (msg: string, warn: boolean) => {
+					el.setText(msg);
+					el.toggleClass('mod-warning', warn);
+				};
 			};
+			const show = noteOf(row);
+			const showUrl = noteOf(web);
+			web.addText((t) =>
+				t
+					.setPlaceholder('https://pod.example.eu/alex/')
+					.setValue(pod.url)
+					.onChange(async (v) => {
+						const url = v.trim();
+						// Every pod path is built by appending to this, so the
+						// trailing slash cannot be optional.
+						pod.url = url && !url.endsWith('/') ? `${url}/` : url;
+						// Permissions belong to the old URL, not this one.
+						delete pod.access;
+						await this.plugin.saveSettings();
+						if (!url) showUrl('Saved. The address is still empty.', true);
+						else if (!isWebAddress(pod.url))
+							showUrl('Saved, but this is not a full address yet.', true);
+						else showUrl('Saved.', false);
+					}),
+			);
 			row
 				.addText((t) =>
 					t
-						.setPlaceholder('https://pod.example.eu/alex/')
-						.setValue(pod.url)
-						.onChange(async (v) => {
-							const url = v.trim();
-							// Every pod path is built by appending to this, so the
-							// trailing slash cannot be optional.
-							pod.url = url && !url.endsWith('/') ? `${url}/` : url;
-							// Permissions belong to the old URL, not this one.
-							delete pod.access;
-							await this.plugin.saveSettings();
-							if (!url) show('Saved. The address is still empty.', true);
-							else if (!isWebAddress(pod.url))
-								show('Saved, but this is not a full address yet.', true);
-							else show('Saved.', false);
-						}),
-				)
-				.addText((t) =>
-					t
-						.setPlaceholder('Vault folder, or / for all of it')
+						.setPlaceholder('Folder, or / for the whole vault')
 						.setValue(pod.folder)
 						.onChange(async (v) => {
 							const folder = v.trim();
@@ -471,23 +633,90 @@ export class SolidSyncSettingTab extends PluginSettingTab {
 		});
 	}
 
+	/** Opens the login, guessing the server from whatever is already set. */
+	private logIn() {
+		const { issuer: known, pods, roster } = this.plugin.settings;
+		const url = pods[0]?.url || roster || known;
+		const guess = url && isWebAddress(url) ? new URL(url).origin : '';
+		new LoginModal(
+			this.app,
+			guess,
+			this.plugin,
+			async (creds, issuer, webId) => {
+				await this.set('issuer', issuer);
+				await this.set('clientId', creds.clientId);
+				await this.set('clientSecret', creds.clientSecret);
+				await this.set('webId', webId);
+				this.display();
+			},
+			async ({ pod, team }) => {
+				if (pod) this.plugin.settings.pods.push(pod);
+				if (team) this.plugin.settings.teamSync = true;
+				await this.plugin.saveSettings();
+				if (team) await setTeam(this.plugin, team.members, team.vaults);
+				this.display();
+				// Logging in is when notes are expected to appear, if any can. Not
+				// awaited: the dialog closes now, and the status line shows the run.
+				const { pods: rows, teamSync: on } = this.plugin.settings;
+				if (rows.length || on) void this.plugin.sync(true).then(() => this.display());
+			},
+		).open();
+	}
+
 	display(): void {
 		const { containerEl } = this;
 		containerEl.empty();
+		const { clientId, issuer, webId, pods, teamSync, team } = this.plugin.settings;
+		const loggedIn = Boolean(clientId);
+		const hasWork = teamSync || pods.some((p) => p.url && p.folder);
+
+		// One blue button per state, the next step: Log in, then Sync now. Logged in with
+		// nothing to sync, the step is the Team sync toggle, which takes no blue. A button
+		// that cannot work yet is greyed rather than refusing later.
+		new Setting(containerEl)
+			.setName('Account')
+			.setDesc(
+				loggedIn
+					? `Logged in${webId ? ` as ${webId}` : ''} on ${issuer}. Every pod below sees you as this; each one decides what you may do.`
+					: 'Log in to sync your own pod and your team. Public pods work without it, read-only.',
+			)
+			.addButton((btn) => {
+				btn.setButtonText(loggedIn ? 'Log in again' : 'Log in').onClick(() => this.logIn());
+				if (!loggedIn) btn.setCta();
+			})
+			.addButton((btn) =>
+				btn
+					.setButtonText('Log out')
+					.setDisabled(!loggedIn)
+					.onClick(() => {
+						new ConfirmModal(
+							this.app,
+							'Log out?',
+							'The token is removed from this vault only; your pod account is untouched. Every pod becomes read-only until you log in again, and nothing is deleted on either side.',
+							'Log out',
+							async () => {
+								await this.set('issuer', '');
+								await this.set('clientId', '');
+								await this.set('clientSecret', '');
+								await this.set('webId', '');
+								this.display();
+							},
+						).open();
+					}),
+			);
 
 		const last = this.plugin.lastRun;
 		const status = new Setting(containerEl)
 			.setName('Status')
-			.addButton((btn) =>
-				btn
-					.setButtonText('Sync now')
-					.setCta()
-					.onClick(async () => {
-						btn.setDisabled(true).setButtonText('Syncing…');
-						await this.plugin.sync(true);
-						this.display();
-					}),
-			);
+			.addButton((btn) => {
+				btn.setButtonText('Sync now').setDisabled(!hasWork);
+				if (hasWork && loggedIn) btn.setCta();
+				btn.onClick(async () => {
+					btn.setDisabled(true).setButtonText('Syncing…');
+					await this.plugin.sync(true);
+					this.display();
+				});
+			});
 		if (last) {
 			// A failed run must not read like a good one after the notice fades.
 			setIcon(status.descEl.createSpan(), last.error ? 'alert-triangle' : 'check');
@@ -496,7 +725,13 @@ export class SolidSyncSettingTab extends PluginSettingTab {
 			);
 			if (last.error) status.descEl.addClass('mod-warning');
 		} else {
-			status.setDesc('Not synced yet.');
+			status.setDesc(
+				hasWork
+					? 'Not synced yet.'
+					: loggedIn
+						? 'Nothing to sync yet: turn on Team sync, or add a pod below.'
+						: 'Nothing to sync yet: log in, or add a pod below.',
+			);
 		}
 
 		// The count in the status line is the whole of what a skip used to say. Folded
@@ -511,53 +746,24 @@ export class SolidSyncSettingTab extends PluginSettingTab {
 			for (const line of last.skipped) list.createEl('li', { text: line });
 		}
 
+		new Setting(containerEl)
+			.setName('Team sync')
+			.setDesc(
+				teamSync
+					? `On: ${team.length} members (${team.map((l) => l.split(' ')[0]).join(', ')}) at team/<their name>, and your team's shared pod at ${VAULT_FOLDER}/. Each sync adds whoever joins and stops syncing whoever leaves; their notes stay.`
+					: loggedIn
+						? `Adds everyone on your team at team/<their name>, and your team's shared pod at ${VAULT_FOLDER}/. Your profile says which team you are in.`
+						: 'Log in first: your profile says which team you are in.',
+			)
+			.addToggle((t) =>
+				t
+					.setValue(teamSync)
+					.setDisabled(!loggedIn && !teamSync)
+					.onChange((v) => this.setTeamSync(v)),
+			);
+
 		this.displayPods(containerEl);
 
-		new Setting(containerEl)
-			.setName('Credentials')
-			.setDesc(
-				this.plugin.settings.clientId
-					? `Token ${this.plugin.settings.clientId.slice(0, 16)}… from ${this.plugin.settings.issuer}. It identifies you to every pod above; each one decides what you may do.`
-					: 'Without credentials every pod is read-only, which is enough for public ones.',
-			)
-			.addButton((btn) =>
-				btn.setButtonText('Log in').onClick(() => {
-					// Your account lives on one server; that one mints the token
-					// every pod in the list is then addressed with.
-					// A guess for the server box, from whatever is already set.
-					const { issuer: known, pods, roster } = this.plugin.settings;
-					const url = pods[0]?.url || roster || known;
-					const guess = url ? new URL(url).origin : '';
-					new LoginModal(this.app, guess, async (creds, issuer) => {
-						await this.set('issuer', issuer);
-						await this.set('clientId', creds.clientId);
-						await this.set('clientSecret', creds.clientSecret);
-						this.display();
-						// Logging in is when notes are expected to appear, if any can.
-						const { pods, teamSync } = this.plugin.settings;
-						if (pods.length || teamSync) await this.plugin.sync(true);
-					}).open();
-				}),
-			)
-			.addButton((btn) =>
-				btn
-					.setButtonText('Clear')
-					.setDisabled(!this.plugin.settings.clientId)
-					.onClick(() => {
-						new ConfirmModal(
-							this.app,
-							'Clear credentials?',
-							'The token is removed from this vault only; your pod account is untouched. Every pod becomes read-only until you log in again, and nothing is deleted on either side.',
-							'Clear',
-							async () => {
-								await this.set('issuer', '');
-								await this.set('clientId', '');
-								await this.set('clientSecret', '');
-								this.display();
-							},
-						).open();
-					}),
-			);
 
 		new Setting(containerEl).setName('Syncing').setHeading();
 
@@ -662,20 +868,6 @@ export class SolidSyncSettingTab extends PluginSettingTab {
 						);
 					});
 			});
-
-		const { teamSync, team } = this.plugin.settings;
-		new Setting(containerEl)
-			.setName('Team sync')
-			.setDesc(
-				teamSync
-					? `On: ${team.length} members (${team.map((l) => l.split(' ')[0]).join(', ')}). Each sync adds whoever joined your team at team/<their short name> and stops syncing whoever left; their notes stay. share: can name them.`
-					: "Off. Sync my team reads the teams your profile says you belong to, shows who is in them, and asks before adding their pods.",
-			)
-			.addButton((btn) =>
-				btn
-					.setButtonText(teamSync ? 'Stop' : 'Sync my team')
-					.onClick(() => void (teamSync ? this.stopTeam() : this.startTeam())),
-			);
 
 		new Setting(containerEl)
 			.setName('Team roster')

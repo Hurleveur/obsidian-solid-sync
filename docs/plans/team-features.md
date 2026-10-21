@@ -240,6 +240,7 @@ Alexandre was accepted by 2026-10-21: `alex/profile/card#me` reads `membres.ttl`
 `hyperscope_ndb/` before then.
 
 Changed the same day, at Alexandre's request: team sync is a switch, off by default.
+Superseded 2026-10-21 by a plain toggle and the login's setup screen ([login-first](login-first.md)).
 **Sync my team** (settings, Team sync) reads the team, names it and its members in a
 confirm, and only then turns it on; **Stop** turns it off and removes the rows it
 added (`setTeam(plugin, [])`), notes kept. A saved roster from before the switch

@@ -51,18 +51,25 @@ Put both in `<vault>/.obsidian/plugins/solid-sync/`, then refresh the list under
 
 ## Setup
 
-1. **Settings → Solid Pod Sync → Add pod**, then set the container URL
-   (`https://pod.example.eu/you/`) and the vault folder it mirrors into. `/` is the
-   whole vault — see [The whole vault as one pod](#the-whole-vault-as-one-pod), and
-   set **Ignore** first if you go that way.
-2. Public pods work immediately, read-only. For your own pod, select **Log in** and
-   enter your server (`https://pod.example.eu`, filled in from the first pod if there
-   is one), email and password. This mints a client-credentials token through the
-   server's account API; the password is used once and never stored. Logging in needs
-   no pod row, so in a team you can log in first and let [Team sync](#team-roster)
-   add the pods.
-3. Run **Sync now** from the command palette, or select the ribbon icon.
-4. Add more pods the same way. Give each its own folder — the same folder twice is
+1. **Settings → Solid Pod Sync → Log in**, at the top. Enter your server
+   (`https://pod.example.eu`), email and password. This mints a client-credentials
+   token through the server's account API; the password is used once and never
+   stored. If your account has several pods, pick yours: the token acts as that pod's
+   WebID.
+2. The login then offers what to sync, and **Start syncing** sets it up:
+   - your pod, at a folder of this vault (`team/<your short name>` when your team
+     lists you, otherwise the pod's name). The folder is only where the notes are kept
+     in Obsidian; nothing on the pod changes.
+   - your team, when your profile names one, with every member listed — see
+     [Team roster](#team-roster).
+
+   **Not now** keeps you logged in with nothing added.
+3. After that, **Sync now** from the command palette or the ribbon icon.
+4. **Add pod** adds any other pod you can read: first the vault folder, then the
+   pod's address (`https://pod.example.eu/you/`). Public pods need no login, read-only.
+   `/` as the folder is the whole vault — see
+   [The whole vault as one pod](#the-whole-vault-as-one-pod), and set **Ignore**
+   first if you go that way. Give each pod its own folder — the same folder twice is
    refused, because a note in two pods' folders would be pushed to the wrong one.
    Filing one pod's folder *inside* another's is fine — see
    [A pod inside a pod's folder](#a-pod-inside-a-pods-folder).
@@ -375,11 +382,11 @@ another app may have changed since.
 ## Team roster
 
 A team that keeps its member list on a pod can have everyone's pod synced without
-adding them one by one. Log in, then select **Sync my team** under **Team sync**. The
-plugin finds the list the way [solid-backoffice](https://github.com/nicolasdb/solid-backoffice)
-does: your profile names each team you belong to (`org:memberOf`), and each team's
-`config.ttl` names its member list (`hs:roster`). It then shows the team's name and
-its members, and adds nothing until you confirm. A team your profile does not name
+adding them one by one. The login offers it, with the team's name and members shown;
+afterwards, the **Team sync** toggle turns it on and off. The plugin finds the list
+the way [solid-backoffice](https://github.com/nicolasdb/solid-backoffice) does: your
+profile names each team you belong to (`org:memberOf`), and each team's `config.ttl`
+names its member list (`hs:roster`). Nothing is read or added while it is off. A team your profile does not name
 can still be used by pasting its list's address into **Team roster**, for example
 `https://pod.example/team/membres.ttl`; that address then replaces the search.
 
@@ -389,6 +396,9 @@ short name. While team sync is on, every sync reads it and:
 
 - adds each member's pod as a row synced at `team/<short name>`, unless a row already
   syncs that pod;
+- adds the team's shared pod at `projects`, and a second team's at
+  `projects/<team name>`. The shared pod is the one `config.ttl` names with
+  `hs:vault`; without one, the `vault/` folder beside `config.ttl`, if you can read it;
 - lets `share:` and `share-write:` name members by their short name;
 - removes a row it added once the list stops naming that person. Their notes stay in
   the vault; only the syncing stops.
@@ -398,8 +408,8 @@ like any other. What each pod lets you read or write is still up to that pod: be
 on the list grants nothing.
 
 Your own pod is on the list too, so a vault where you have only logged in gets a
-row for it at `team/<your short name>` as well. **Stop** turns team sync off: the rows
-it added go, their notes stay, and rows you added by hand are kept.
+row for it at `team/<your short name>` as well. Turning the toggle off removes the
+rows it added; their notes stay, and rows you added by hand are kept.
 
 The list is usually readable by members only. When it, your profile or a team's
 `config.ttl` cannot be read (offline, or you have not been accepted yet), the last
@@ -618,6 +628,19 @@ profile):
 
 ```bash
 POD_URL=… POD_ID=… POD_SECRET=… MEMBER_POD=… MEMBER_ID=… MEMBER_SECRET=… node test/team.mjs
+```
+
+Login — drives the login dialog against the account API with two throwaway accounts
+on one password: one owning two pods (add a second pod to it in `seed.json`), one
+owning one. Checks that the pod picked is the WebID the token acts as, that your pod
+lands at the folder given and is not added twice, that a team listing you puts your
+pod at `team/<short name>` and its shared pod at `projects`, that **Not now** adds
+nothing, that the Team sync toggle adds and removes the team, and that a wrong
+password mints nothing. It writes `lg-team/` in the one-pod account and adds, then
+removes, an `org:memberOf` line in its profile:
+
+```bash
+SERVER=http://localhost:3000 TWO_EMAIL=… ONE_EMAIL=… PASSWORD=… node test/login.mjs
 ```
 
 Local history — writes `hi-*` resources into two containers of one scratch pod. Checks

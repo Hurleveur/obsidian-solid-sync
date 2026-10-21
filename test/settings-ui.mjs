@@ -56,16 +56,20 @@ const plugin = {
 const tab = new SolidSyncSettingTab(plugin.app, plugin);
 tab.display();
 
-// The tab reads top to bottom: happening now, connected, how it syncs, rare.
+// The tab reads top to bottom: who you are, happening now, what syncs, how, rare.
+// Team sync sits right above the pods it adds to.
 const rows = () => tab.containerEl.settings;
 assert.deepEqual(
 	rows().map((s) => s.name),
 	[
+		'Account',
 		'Status',
+		'Team sync',
 		'Pods',
-		'Pod 1',
-		'Pod 2',
-		'Credentials',
+		'Pod 1: folder in this vault',
+		'Pod address',
+		'Pod 2: folder in this vault',
+		'Pod address',
 		'Syncing',
 		'Sync on startup',
 		'Sync after changes',
@@ -74,7 +78,6 @@ assert.deepEqual(
 		'Maximum file size (MB)',
 		'Ignore',
 		'Team members',
-		'Team sync',
 		'Team roster',
 		'Deleted notes',
 		'Delete on pod when a note is deleted',
@@ -87,6 +90,52 @@ assert.deepEqual(
 		.map((s) => s.name),
 	['Pods', 'Syncing', 'Deleted notes'],
 );
+
+// Each pod asks for its vault folder first, then its address online.
+const podRows = rows().filter((s) => /^Pod (\d|address)/.test(s.name));
+assert.deepEqual(
+	podRows.map((s) => s.components[0].value),
+	['Pod', 'https://a.example/', 'Work', 'https://b.example/'],
+);
+assert.match(podRows[0].desc, /kept in Obsidian/);
+assert.match(podRows[1].desc, /stored online/);
+
+// --- one blue button, the next step; greyed where it cannot work yet ---------
+const button = (r, text) =>
+	r.find((s) => s.components.some((c) => c.buttonText === text))
+		.components.find((c) => c.buttonText === text);
+const blue = (r) =>
+	r.flatMap((s) => s.components).filter((c) => c.kind === 'button' && c.cta).map((c) => c.buttonText);
+// Logged out, with pods: log in is the step, the public pods still sync.
+assert.deepEqual(blue(rows()), ['Log in']);
+assert.equal(button(rows(), 'Sync now').disabled, false);
+const teamToggle = () =>
+	rows().find((s) => s.name === 'Team sync').components.find((c) => c.kind === 'toggle');
+assert.equal(teamToggle().disabled, true, 'the team needs a login');
+assert.equal(button(rows(), 'Log out').disabled, true);
+assert.ok(!button(rows(), 'Add pod').cta, 'logging in offers your own pod');
+// Logged in: syncing is the step.
+plugin.settings.clientId = 'id';
+plugin.settings.issuer = 'https://a.example';
+tab.display();
+assert.deepEqual(blue(rows()), ['Sync now']);
+assert.equal(button(rows(), 'Log in again').disabled, undefined);
+assert.equal(teamToggle().disabled, false);
+assert.equal(button(rows(), 'Log out').disabled, false);
+// Logged in with nothing to sync: the team is the step, Sync now is greyed.
+const savedPods = plugin.settings.pods;
+const savedRun = plugin.lastRun;
+plugin.settings.pods = [];
+plugin.lastRun = undefined;
+tab.display();
+assert.deepEqual(blue(rows()), [], 'the step is the Team sync toggle, which has no blue');
+assert.equal(button(rows(), 'Sync now').disabled, true);
+assert.match(rows().find((s) => s.name === 'Status').desc, /Nothing to sync yet/);
+plugin.settings.pods = savedPods;
+plugin.lastRun = savedRun;
+plugin.settings.clientId = '';
+plugin.settings.issuer = '';
+tab.display();
 
 // --- the ignore box says what it currently catches ---------------------------
 // Counted against the vault as it stands, so a pattern that matches nothing shows
@@ -121,34 +170,26 @@ const confirmButton = (modal, accept) =>
 		(c) => (c.buttonText !== 'Cancel') === accept,
 	);
 
-// --- team sync is off until asked, and stopping it asks first ----------------
-// Adding other people's pods is a choice: nothing reads the team until the button.
+// --- team sync is a toggle, off until turned on ------------------------------
+// Adding other people's pods is a choice: nothing reads the team until it is on.
 assert.equal(migrateSettings({}).teamSync, false, 'off by default');
 // A fresh vault's lists are its own: adding a pod must not change the defaults.
 migrateSettings({}).pods.push({ url: 'https://x.example/', folder: 'X' });
 assert.deepEqual(migrateSettings({}).pods, [], 'defaults untouched');
 assert.equal(migrateSettings({ roster: 'https://x.example/m.ttl' }).teamSync, true, 'a roster saved before the switch keeps syncing');
 assert.equal(migrateSettings({ roster: 'https://x.example/m.ttl', teamSync: false }).teamSync, false);
-const teamButton = () =>
-	rows().find((s) => s.name === 'Team sync').components.find((c) => c.kind === 'button');
 plugin.settings.teamSync = false;
 tab.display();
-assert.equal(teamButton().buttonText, 'Sync my team');
-const modals = Modal.opened.length;
-await teamButton().clicked();
-assert.equal(Modal.opened.length, modals, 'logged out: a notice, no question');
-assert.equal(plugin.settings.teamSync, false);
+assert.equal(teamToggle().value, false);
 
 plugin.settings.teamSync = true;
 plugin.settings.team = ['neil https://c.example/neil/profile/card#me'];
 plugin.settings.pods.push({ url: 'https://c.example/neil/', folder: 'team/neil', roster: true });
 plugin.state['team/neil/n.md'] = {};
 tab.display();
-assert.equal(teamButton().buttonText, 'Stop');
-await teamButton().clicked();
-assert.equal(plugin.settings.teamSync, true, 'nothing stops before the confirm');
-await confirmButton(Modal.opened.at(-1), true).clicked();
-assert.equal(plugin.settings.teamSync, false);
+assert.equal(teamToggle().value, true);
+await teamToggle().changed(false);
+assert.equal(plugin.settings.teamSync, false, 'off at once, no question: the notes stay');
 assert.deepEqual(plugin.settings.pods.map((p) => p.folder), ['Pod', 'Work'], 'the row team sync added goes, hand rows stay');
 assert.deepEqual(plugin.settings.team, []);
 assert.ok(!('team/neil/n.md' in plugin.state), 'its sync history goes with it');
@@ -158,7 +199,7 @@ const trash = (name) =>
 	rows()
 		.find((s) => s.name === name)
 		.components.find((c) => c.kind === 'extra-button');
-await trash('Pod 1').clicked();
+await trash('Pod 1: folder in this vault').clicked();
 assert.equal(plugin.settings.pods.length, 2, 'nothing removed before the confirm');
 
 await confirmButton(Modal.opened.at(-1), true).clicked();
@@ -171,7 +212,7 @@ assert.deepEqual(
 );
 
 // Cancelling instead leaves the list exactly as it is.
-await trash('Pod 1').clicked();
+await trash('Pod 1: folder in this vault').clicked();
 confirmButton(Modal.opened.at(-1), false).clicked();
 assert.equal(plugin.settings.pods.length, 1);
 assert.equal(plugin.settings.pods[0].folder, 'Work');
@@ -188,7 +229,7 @@ const bareTab = new SolidSyncSettingTab(bare.app, bare);
 bareTab.display();
 const modalCount = Modal.opened.length;
 await bareTab.containerEl.settings
-	.find((s) => s.name === 'Credentials')
+	.find((s) => s.name === 'Account')
 	.components.find((c) => c.buttonText === 'Log in')
 	.clicked();
 assert.equal(Modal.opened.length, modalCount + 1, 'no pod: the login still opens');
@@ -199,7 +240,7 @@ await server.changed('ftp://pod.example');
 await login.contentEl.settings.at(-1).components[0].clicked();
 assert.equal(bare.settings.issuer, '', 'a server that is no web address mints nothing');
 await rows()
-	.find((s) => s.name === 'Credentials')
+	.find((s) => s.name === 'Account')
 	.components.find((c) => c.buttonText === 'Log in')
 	.clicked();
 assert.equal(

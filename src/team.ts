@@ -20,6 +20,23 @@ const FOAF = 'http://xmlns.com/foaf/0.1/';
 const MEMBER_OF = 'http://www.w3.org/ns/org#memberOf';
 // solid-backoffice's own namespace, provisional there too (its src/lib/vocab.ts).
 const HS_ROSTER = 'https://pod.nicolasdb.eu/hyperscope/vocab#roster';
+// Proposed to the backoffice, not in its vocab yet: the collective's shared pod.
+const HS_VAULT = 'https://pod.nicolasdb.eu/hyperscope/vocab#vault';
+/** Where a team's shared pod is kept in the vault; a second team's goes inside it. */
+export const VAULT_FOLDER = 'projects';
+
+/** A collective's shared pod, and the name its folder takes if it is not the first. */
+export interface SharedPod {
+	url: string;
+	name: string;
+}
+
+/**
+ * A collective's name as a folder name: someone else's text that ends up in a vault
+ * path, so anything but letters, digits, spaces, `-` and `_` is dropped.
+ */
+export const folderName = (name: string) =>
+	name.replace(/[^\p{L}\p{N} _-]/gu, '').trim().slice(0, 60);
 
 export interface Member {
 	webId: string;
@@ -156,28 +173,45 @@ async function readTriples(fetcher: Fetcher, url: string): Promise<[string, stri
 
 /**
  * The roster of each collective the profile says this WebID belongs to, with the
- * collective's `foaf:name` when it has one. A collective whose config names no
- * roster is left out; one that cannot be read throws, since leaving it out would
- * read as having left it.
+ * collective's `foaf:name` and shared pod when it has them. A collective whose config
+ * names no roster is left out; one that cannot be read throws, since leaving it out
+ * would read as having left it.
  * shortcut: the profile goes through the roster's small Turtle reader, so a profile
  * with blank nodes (other providers) cannot be read; take `n3` then.
  */
 export async function discoverRosters(
 	fetcher: Fetcher,
 	webId: string,
-): Promise<{ group: string; roster: string; name?: string }[]> {
+): Promise<{ group: string; roster: string; name?: string; vault?: SharedPod }[]> {
 	const docOf = (iri: string) => iri.replace(/#.*/, '');
 	const profile = await readTriples(fetcher, docOf(webId));
 	const groups = new Set(
 		profile.filter(([s, p]) => s === webId && p === MEMBER_OF).map(([, , o]) => o),
 	);
-	const found: { group: string; roster: string; name?: string }[] = [];
+	const found: { group: string; roster: string; name?: string; vault?: SharedPod }[] = [];
 	for (const group of groups) {
 		if (!/^https?:\/\//.test(group)) continue;
 		const config = await readTriples(fetcher, docOf(group));
 		const about = (p: string) => config.find(([s, q]) => s === group && q === p)?.[2];
 		const roster = about(HS_ROSTER);
-		if (roster && /^https?:\/\//.test(roster)) found.push({ group, roster, name: about(`${FOAF}name`) });
+		if (!roster || !/^https?:\/\//.test(roster)) continue;
+		let vault = about(HS_VAULT);
+		if (!vault) {
+			// shortcut: guesses the backoffice's layout, `vault/` beside config.ttl, used
+			// only when this login can read it; drop once configs carry hs:vault.
+			const guess = new URL('vault/', docOf(group)).href;
+			const res = await fetcher(guess, { method: 'HEAD', headers: NO_CACHE });
+			if (res.ok) vault = guess;
+		}
+		const name = about(`${FOAF}name`);
+		// Unnamed, a collective is called after its folder: hyperscope/config.ttl.
+		const folder = folderName(name ?? '') || folderName(new URL('.', docOf(group)).pathname.split('/').filter(Boolean).pop() ?? '');
+		found.push({
+			group,
+			roster,
+			name,
+			vault: vault && folder && /^https?:\/\/.*\/$/.test(vault) ? { url: vault, name: folder } : undefined,
+		});
 	}
 	return found;
 }
@@ -190,10 +224,10 @@ export async function discoverRosters(
 export async function findTeam(
 	fetcher: Fetcher,
 	roster: string,
-): Promise<{ names: string[]; members: Member[] }> {
-	if (!roster && !fetcher.webId) return { names: [], members: [] };
-	const rosters = roster
-		? [{ roster, group: undefined, name: roster }]
+): Promise<{ names: string[]; members: Member[]; vaults: SharedPod[] }> {
+	if (!roster && !fetcher.webId) return { names: [], members: [], vaults: [] };
+	const rosters: { roster: string; group?: string; name?: string; vault?: SharedPod }[] = roster
+		? [{ roster, name: roster }]
 		: await discoverRosters(fetcher, fetcher.webId as string);
 	const members: Member[] = [];
 	for (const r of rosters) {
@@ -201,23 +235,39 @@ export async function findTeam(
 			if (!members.some((k) => k.webId === m.webId)) members.push(m);
 		}
 	}
-	return { names: rosters.map((r) => r.name ?? r.group ?? r.roster), members };
+	const vaults: SharedPod[] = [];
+	for (const { vault } of rosters) {
+		if (vault && !vaults.some((v) => v.url === vault.url)) vaults.push(vault);
+	}
+	return { names: rosters.map((r) => r.name ?? r.group ?? r.roster), members, vaults };
 }
 
 /**
- * The pod rows once the roster is applied: a member whose pod no row syncs yet gets
- * `team/<nick>`; a row the roster added and no longer lists goes. Rows added by hand
- * are never changed, and a member whose pod one already syncs gets no second row.
- * Returns the new rows, the ones dropped, and what could not be added.
+ * The pod rows once the roster is applied: a team's shared pod gets `projects`, or
+ * `projects/<team name>` once `projects` is taken, and a member whose pod no row syncs
+ * yet gets `team/<nick>`; a row the roster added and no longer lists goes. Rows added by hand are never changed, and a pod one already
+ * syncs gets no second row. Returns the new rows, the ones dropped, and what could
+ * not be added.
  */
 export function mergeRoster(
 	pods: PodConfig[],
 	members: Member[],
+	vaults: SharedPod[] = [],
 ): { pods: PodConfig[]; removed: PodConfig[]; skipped: string[] } {
-	const listed = new Set(members.map((m) => ownPod(m.webId)));
+	const listed = new Set([...vaults.map((v) => v.url), ...members.map((m) => ownPod(m.webId))]);
 	const removed = pods.filter((p) => p.roster && !listed.has(p.url));
 	const next = pods.filter((p) => !removed.includes(p));
 	const skipped: string[] = [];
+	for (const { url, name } of vaults) {
+		if (next.some((p) => p.url === url)) continue;
+		const folder = next.some((p) => p.folder === VAULT_FOLDER) ? `${VAULT_FOLDER}/${name}` : VAULT_FOLDER;
+		const clash = folderClash(next, next.length, folder);
+		if (clash) {
+			skipped.push(`${folder} (the shared pod of ${name}: "${clash}" is already another pod's folder)`);
+			continue;
+		}
+		next.push({ url, folder, roster: true });
+	}
 	for (const { webId, nick } of members) {
 		const url = ownPod(webId);
 		if (next.some((p) => p.url === url)) continue;
@@ -240,8 +290,12 @@ export const memberLines = (members: Member[]) =>
  * Brings the pod rows and share names in line with `members`: `[]` removes every
  * row the roster added, which is how team sync is turned off. Notes stay.
  */
-export async function setTeam(plugin: SolidSyncPlugin, members: Member[]): Promise<string[]> {
-	const merged = mergeRoster(plugin.settings.pods, members);
+export async function setTeam(
+	plugin: SolidSyncPlugin,
+	members: Member[],
+	vaults: SharedPod[] = [],
+): Promise<string[]> {
+	const merged = mergeRoster(plugin.settings.pods, members, vaults);
 	const team = memberLines(members);
 	// Every full run with team sync on gets here: write settings only on a change.
 	const same =
@@ -275,11 +329,12 @@ export async function applyRoster(
 	// Logged out, there is no profile to read: an empty team here would drop every row.
 	if (!roster && !fetcher.webId) return;
 	let members: Member[];
+	let vaults: SharedPod[];
 	try {
-		({ members } = await findTeam(fetcher, roster));
+		({ members, vaults } = await findTeam(fetcher, roster));
 	} catch (e) {
 		skipped.push(`team roster ${roster || 'from your profile'} (${(e as Error).message}; last team kept)`);
 		return;
 	}
-	skipped.push(...(await setTeam(plugin, members)));
+	skipped.push(...(await setTeam(plugin, members, vaults)));
 }

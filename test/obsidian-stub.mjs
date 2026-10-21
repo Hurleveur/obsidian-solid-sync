@@ -37,7 +37,9 @@ export async function requestUrl(opts) {
 	};
 }
 export class Notice {
+	static shown = [];
 	constructor(msg) {
+		if (msg) Notice.shown.push(String(msg));
 		if (msg) console.log('  [notice]', String(msg).replace(/\n/g, ' | '));
 	}
 	setMessage(m) {
@@ -103,6 +105,7 @@ export class Modal {
 		this.onOpen?.();
 	}
 	close() {
+		this.closed = true;
 		this.onClose?.();
 	}
 	onOpen() {}
@@ -121,14 +124,25 @@ export class PluginSettingTab {
 class Component {
 	constructor(kind) {
 		this.kind = kind;
-		this.inputEl = {};
+		// Enter in a box: `typed('Enter')` runs what a keydown listener would.
+		this.inputEl = { addEventListener: (_type, cb) => (this.keydown = cb) };
 		this.buttonEl = makeEl();
+		this.buttonEl.click = () => this.clicked?.();
+		this.options = [];
+	}
+	typed(key) {
+		return this.keydown?.({ key });
+	}
+	addOption(value, text) {
+		this.options.push([value, text]);
+		return this;
 	}
 	setButtonText(t) {
 		this.buttonText = t;
 		return this;
 	}
 	setCta() {
+		this.cta = true;
 		return this;
 	}
 	setIcon(i) {
@@ -201,6 +215,9 @@ export class Setting {
 	}
 	addTextArea(cb) {
 		return this.add('textarea', cb);
+	}
+	addDropdown(cb) {
+		return this.add('dropdown', cb);
 	}
 }
 

@@ -183,6 +183,23 @@ export async function createFetcher(
 /** A 401 sooner than this after minting is a refusal, not an expiry. */
 const FRESH_TOKEN_MS = 10_000;
 
+/** A logged-in pod account: what it owns, and a way to mint a token for it. */
+export interface Account {
+	/** Pod roots the account owns, each ending in `/`. */
+	pods: string[];
+	webIds: string[];
+	/** Each call leaves one more client-credentials entry on the account. */
+	mint(webId: string): Promise<{ clientId: string; clientSecret: string }>;
+}
+
+/**
+ * The WebID that lives inside `pod`. Without a pod, or with an account holding one
+ * WebID (an outside WebID linked to it), that one; never another pod's.
+ */
+export const webIdFor = (account: Account, pod?: string) =>
+	(pod && account.webIds.find((w) => w.startsWith(pod))) ||
+	(!pod || account.webIds.length === 1 ? account.webIds[0] : undefined);
+
 /**
  * Mints client credentials through the pod's account API, so the user never has to
  * find them by hand. The password is used for this one exchange and never stored.
@@ -192,6 +209,18 @@ export async function createClientCredentials(
 	email: string,
 	password: string,
 ): Promise<{ clientId: string; clientSecret: string }> {
+	const account = await logInToAccount(issuer, email, password);
+	const webId = webIdFor(account);
+	if (!webId) throw new Error('No WebID found on this account.');
+	return account.mint(webId);
+}
+
+/** Logs in to the account API and reads which pods and WebIDs the account has. */
+export async function logInToAccount(
+	issuer: string,
+	email: string,
+	password: string,
+): Promise<Account> {
 	async function call<T>(
 		what: string,
 		url: string,
@@ -232,23 +261,33 @@ export async function createClientCredentials(
 	}>('Reading WebID', control(account, 'account', 'webId'), {
 		headers: authHeader(authorization),
 	});
-	const webId = Object.keys(webIdLinks ?? {})[0];
-	if (!webId) throw new Error('No WebID found on this account.');
+	// Listing pods is a convenience: a server without the endpoint still logs in.
+	const podList = account.controls.account?.pod;
+	const { pods } = podList
+		? await call<{ pods?: Record<string, unknown> }>('Reading pods', podList, {
+				headers: authHeader(authorization),
+			})
+		: { pods: {} };
 
-	const created = await call<{ id: string; secret: string }>(
-		'Creating credentials',
-		control(account, 'account', 'clientCredentials'),
-		{
-			method: 'POST',
-			headers: {
-				...authHeader(authorization),
-				'content-type': 'application/json',
-			},
-			body: JSON.stringify({ name: 'obsidian-solid-sync', webId }),
+	return {
+		pods: Object.keys(pods ?? {}),
+		webIds: Object.keys(webIdLinks ?? {}),
+		async mint(webId) {
+			const created = await call<{ id: string; secret: string }>(
+				'Creating credentials',
+				control(account, 'account', 'clientCredentials'),
+				{
+					method: 'POST',
+					headers: {
+						...authHeader(authorization),
+						'content-type': 'application/json',
+					},
+					body: JSON.stringify({ name: 'obsidian-solid-sync', webId }),
+				},
+			);
+			return { clientId: created.id, clientSecret: created.secret };
 		},
-	);
-
-	return { clientId: created.id, clientSecret: created.secret };
+	};
 }
 
 const IANA = 'http://www.w3.org/ns/iana/media-types/';
