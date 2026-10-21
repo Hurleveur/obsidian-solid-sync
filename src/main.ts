@@ -66,7 +66,7 @@ export default class SolidSyncPlugin extends Plugin {
 					changed(file);
 				}),
 			);
-			if (this.settings.syncOnStartup && (this.settings.pods.length || this.settings.roster)) void this.sync();
+			if (this.settings.syncOnStartup && (this.settings.pods.length || this.settings.roster)) void this.sync(false, true);
 		});
 	}
 
@@ -93,8 +93,11 @@ export default class SolidSyncPlugin extends Plugin {
 		);
 	}
 
-	/** `manual`: the user asked, so the run shows progress and its outcome even if unchanged. */
-	async sync(manual = false) {
+	/**
+	 * `manual`: the user asked, so the run shows progress and its outcome even if unchanged.
+	 * `full`: visit the whole pod; otherwise only what changed in the vault (see `runSync`).
+	 */
+	async sync(manual = false, full = manual) {
 		if (this.syncing) {
 			new Notice('Solid sync already running.');
 			return;
@@ -105,7 +108,7 @@ export default class SolidSyncPlugin extends Plugin {
 		window.clearTimeout(this.pending);
 		const notice = manual ? new Notice('Syncing pod…', 0) : null;
 		try {
-			const result = await runSync(this);
+			const result = await runSync(this, !full);
 			this.lastRun = {
 				at: new Date().toISOString(),
 				result,

@@ -21,6 +21,7 @@ import {
 	anonymousFetch,
 	canWriteFrom,
 	createFetcher,
+	listAll,
 	NO_CACHE,
 	walk,
 	type Fetcher,
@@ -479,7 +480,12 @@ export function staleBindings(
 	);
 }
 
-export async function runSync(plugin: SolidSyncPlugin): Promise<string> {
+/**
+ * `scoped`: what an edit triggers. Only paths changed in the vault since they last
+ * synced are visited, against listings of their own folders, so the pod's other
+ * changes wait for the next full run (startup, or one the user starts).
+ */
+export async function runSync(plugin: SolidSyncPlugin, scoped = false): Promise<string> {
 	const { issuer, clientId, clientSecret, roster } = plugin.settings;
 	const first = plugin.settings.pods.find((p) => p.url && p.folder);
 	if (!first && !roster) {
@@ -507,7 +513,7 @@ export async function runSync(plugin: SolidSyncPlugin): Promise<string> {
 		ignored: 0,
 	};
 
-	if (roster) await applyRoster(plugin, fetcher, report.skipped);
+	if (roster && !scoped) await applyRoster(plugin, fetcher, report.skipped);
 	const { pods } = plugin.settings;
 	const configured = pods.filter((p) => p.url && p.folder);
 
@@ -520,7 +526,7 @@ export async function runSync(plugin: SolidSyncPlugin): Promise<string> {
 
 	for (const pod of configured) {
 		try {
-			await syncPod(plugin, pod, fetcher, report, authenticated);
+			await syncPod(plugin, pod, fetcher, report, authenticated, scoped);
 		} catch (e) {
 			// One unreachable pod must not stop the others.
 			report.skipped.push(`${pod.folder} (${(e as Error).message})`);
@@ -541,6 +547,7 @@ async function syncPod(
 	fetcher: Fetcher,
 	report: Report,
 	authenticated: boolean,
+	scoped: boolean,
 ): Promise<void> {
 	const { pushDeletions, maxFileMB } = plugin.settings;
 	const root = pod.url.endsWith('/') ? pod.url : `${pod.url}/`;
@@ -591,8 +598,11 @@ async function syncPod(
 	// and the two would be filed as a conflict with the old container's copy keeping
 	// the name. Edited since, it is the user's, and stays — as a note this folder's
 	// pod does not have yet.
+	const stale = staleBindings(state, pod.folder, root, claimed);
+	// Repointing decides against the whole new container; a scoped run cannot.
+	if (stale.length) scoped = false;
 	const carriedOver = new Set<string>();
-	for (const path of staleBindings(state, pod.folder, root, claimed)) {
+	for (const path of stale) {
 		const file = vault.getFileByPath(path);
 		if (file && file.stat.mtime === state[path]?.local) carriedOver.add(path);
 		delete state[path];
@@ -616,11 +626,48 @@ async function syncPod(
 		return true;
 	};
 
-	const { resources, unreadable, canWrite } = await walk(fetcher, root);
+	const local = new Map<string, TFile>();
+	for (const file of vault.getFiles()) {
+		if (
+			file.path.startsWith(prefix) &&
+			!claimed(file.path) &&
+			!isIgnored(file.path) &&
+			!carriedOver.has(file.path) &&
+			!CONFLICT_COPY.test(file.path) &&
+			!tooBig(file.path, file.stat.size, 'in the vault')
+		) {
+			local.set(file.path, file);
+		}
+	}
+	const known = Object.keys(state).filter(
+		(p) => p.startsWith(prefix) && !claimed(p),
+	);
+
+	// A scoped run visits what moved in the vault since it last synced — an edit, a
+	// new file, a deletion — read off the state, not off the event that woke it, so
+	// one that failed offline is still there to try next time. Each is decided
+	// against a listing of its own folder, which is all the per-path branches read.
+	const dirty = scoped
+		? [
+				...[...local].filter(([p, f]) => state[p]?.local !== f.stat.mtime).map(([p]) => p),
+				...known.filter((p) => !local.has(p)),
+			]
+		: [];
+	if (scoped && !dirty.length) return;
+
+	// A folder that 404s in a scoped run does not exist on the pod yet: a new note
+	// in it can be pushed (the PUT creates it). A synced note under one is left for
+	// a full run, which can tell a folder deleted on the pod from a pod gone missing.
+	const absent: string[] = [];
+	const { resources, unreadable, canWrite } = scoped
+		? await listFolders(fetcher, root, dirty.map((p) => parentUrl(state[p]?.url ?? urlFor(root, prefix, p))), absent)
+		: await walk(fetcher, root);
 	// An ACP server sends no WAC-Allow, so `undefined` means "the pod did not say".
 	// Assume we may write and let the first 403 settle it, rather than refusing to
-	// push against a pod that would have accepted it.
-	const writable = authenticated && canWrite !== false;
+	// push against a pod that would have accepted it. A scoped run that did not list
+	// the root goes by what the last full run found.
+	const said = canWrite ?? (scoped && pod.access ? pod.access === 'write' : undefined);
+	const writable = authenticated && said !== false;
 	pod.access = writable ? 'write' : 'read';
 
 	// A container we could not list says nothing about what it holds: a dropped
@@ -634,6 +681,7 @@ async function syncPod(
 		({ url }) => prefix + decodeURIComponent(url.slice(root.length)),
 	);
 	const frozen = (path: string) => frozenPrefixes.some((p) => path.startsWith(p));
+	const absentPrefixes = absent.map((url) => prefix + decodeURIComponent(url.slice(root.length)));
 
 	const remote = new Map<string, { r: PodResource; kind: Kind }>();
 	for (const r of resources) {
@@ -660,20 +708,6 @@ async function syncPod(
 			continue;
 		}
 		remote.set(path, { r, kind });
-	}
-
-	const local = new Map<string, TFile>();
-	for (const file of vault.getFiles()) {
-		if (
-			file.path.startsWith(prefix) &&
-			!claimed(file.path) &&
-			!isIgnored(file.path) &&
-			!carriedOver.has(file.path) &&
-			!CONFLICT_COPY.test(file.path) &&
-			!tooBig(file.path, file.stat.size, 'in the vault')
-		) {
-			local.set(file.path, file);
-		}
 	}
 
 	// Before anything below can change a file: what is here now is the starting point.
@@ -719,11 +753,10 @@ async function syncPod(
 	// safe one, since the branch that deletes a pod copy needs the resource in
 	// `remote` and an ignored path never is. Removing the rule later then rediscovers
 	// both copies rather than acting on a record of them from before it existed.
-	const known = Object.keys(state).filter(
-		(p) => p.startsWith(prefix) && !claimed(p),
-	);
+	// A scoped run listed only some folders; counting every missing note keeps the
+	// guard at least as strict as a full run's.
 	const missingLocally = known.filter(
-		(p) => remote.has(p) && !local.has(p) && !oversize.has(p),
+		(p) => (scoped || remote.has(p)) && !local.has(p) && !oversize.has(p),
 	);
 	const massDeletion =
 		missingLocally.length > 3 && missingLocally.length > known.length / 2;
@@ -887,12 +920,7 @@ async function syncPod(
 					`${path} (new note, ${authenticated ? 'no write access per pod root' : 'no credentials'})`,
 				);
 			} else {
-				// Per segment, not `encodeURI`: that leaves `,` `;` `&` `=` `+` `$` `@`
-				// raw, the server escapes them, and the DPoP proof signed over the raw
-				// URL stops matching — a 401 that reads as "no write access".
-				const url =
-					root +
-					path.slice(prefix.length).split('/').map(encodeURIComponent).join('/');
+				const url = urlFor(root, prefix, path);
 				const status = await push(fetcher, vault, f, url, state);
 				if (status === null) {
 					pushedPaths.push(path);
@@ -914,8 +942,12 @@ async function syncPod(
 	// the folder named in the summary. Iteration order is stable, so it stayed lost on
 	// every later run too. Nothing is recorded for the path, so the next run tries it
 	// again rather than reading it as synced.
-	for (const path of new Set([...remote.keys(), ...local.keys(), ...known])) {
+	for (const path of new Set(scoped ? dirty : [...remote.keys(), ...local.keys(), ...known])) {
 		if (oversize.has(path) || frozen(path)) continue;
+		if (state[path] && absentPrefixes.some((a) => path.startsWith(a))) {
+			report.skipped.push(`${path} (its folder is not on the pod, left for a full sync)`);
+			continue;
+		}
 		try {
 			await syncPath(path);
 		} catch (e) {
@@ -958,11 +990,18 @@ async function syncPod(
 	const logged = plugin.settings.syncLog && writable
 		? await appendLog(plugin, fetcher, root, prefix, pushedPaths, deletedPaths, report)
 		: null;
-	if (pushedPaths.length || logged) {
-		const fresh = new Map(
-			(await walk(fetcher, root)).resources.map((r) => [r.url, r]),
-		);
-		for (const path of logged ? [...pushedPaths, logged] : pushedPaths) {
+	// Only the folders written to: their listings carry the same timestamps a walk
+	// of the whole pod would, without listing every other folder a second time.
+	const refreshed = logged ? [...pushedPaths, logged] : pushedPaths;
+	if (refreshed.length) {
+		const folders = [...new Set(refreshed.map((p) => parentUrl(state[p]?.url ?? '')))];
+		const fresh = new Map<string, PodResource>();
+		for (const listing of await listAll(fetcher, folders)) {
+			if (listing.status === 'fulfilled') {
+				for (const r of listing.value.children) fresh.set(r.url, r);
+			}
+		}
+		for (const path of refreshed) {
 			const entry = state[path];
 			if (entry) entry.pod = fresh.get(entry.url)?.modified ?? '';
 		}
@@ -1031,6 +1070,47 @@ async function appendLog(
 		report.skipped.push(`${label} (sync log: ${(e as Error).message})`);
 		return null;
 	}
+}
+
+/** Where a new vault path goes on the pod. */
+function urlFor(root: string, prefix: string, path: string): string {
+	// Per segment, not `encodeURI`: that leaves `,` `;` `&` `=` `+` `$` `@`
+	// raw, the server escapes them, and the DPoP proof signed over the raw
+	// URL stops matching — a 401 that reads as "no write access".
+	return root + path.slice(prefix.length).split('/').map(encodeURIComponent).join('/');
+}
+
+function parentUrl(url: string): string {
+	return url.slice(0, url.lastIndexOf('/') + 1);
+}
+
+/**
+ * What `walk` returns, from the named folders alone: the resources directly in
+ * each, the ones that could not be listed, and `canWrite` if the root was among
+ * them. A 404 goes to `absent` rather than `unreadable`.
+ */
+async function listFolders(
+	fetcher: Fetcher,
+	root: string,
+	urls: string[],
+	absent: string[],
+): Promise<Awaited<ReturnType<typeof walk>>> {
+	const folders = [...new Set(urls)];
+	const resources: PodResource[] = [];
+	const unreadable: { url: string; reason: string }[] = [];
+	let canWrite: boolean | undefined;
+	(await listAll(fetcher, folders)).forEach((listing, i) => {
+		const url = folders[i] as string;
+		if (listing.status === 'rejected') {
+			const { status, message } = listing.reason as Error & { status?: number };
+			if (status === 404 && url !== root) absent.push(url);
+			else unreadable.push({ url, reason: status ? String(status) : `network error: ${message}` });
+			return;
+		}
+		if (url === root) canWrite = listing.value.canWrite;
+		resources.push(...listing.value.children.filter((c) => !c.isContainer));
+	});
+	return { resources, unreadable, canWrite };
 }
 
 /**

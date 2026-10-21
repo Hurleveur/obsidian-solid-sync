@@ -58,6 +58,9 @@ is true about *this* plugin.
   disk, and they disagree — `create` throws on a path already on disk. Check both.
 - Removing a pod row must drop its state entries (`ownedBy`), or they strand under a
   folder no run visits again.
+- A scoped run (`runSync(plugin, true)`, what an edit triggers) decides a path only
+  against a listing of its own folder. Its dirty set comes from state, not events.
+  A 404 there may be a missing pod: it never trashes or deletes on one.
 
 ## Installing a build
 

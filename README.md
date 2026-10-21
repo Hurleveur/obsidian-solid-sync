@@ -177,9 +177,17 @@ vault root there can be thousands of them.
 | **Sync now** — ribbon icon, command palette, or the settings button | Always available |
 | Right after a successful login | Always |
 | **Sync on startup** — on plugin load, not periodic | Off |
-| **Sync after changes** — about 10 seconds after you add, edit, rename or delete a file in any synced folder, once a burst of edits settles | Off |
+| **Sync after changes** — about 10 seconds after you add, edit, rename or delete a file in any synced folder, once a burst of edits settles. Sends only your changes (see below) | Off |
 
-There is no polling. Pod-side changes arrive on the next sync, so leave **Sync after changes** on if you edit from more than one place.
+A sync you start and the startup sync are full: every folder of every pod is listed, and
+changes flow both ways. A sync after changes is scoped. It sends what changed in the vault
+since it last synced (edits, new files, deletions), and lists only the folders those files
+sit in, so an edit costs a request or two rather than a listing of every pod. A note someone
+else edited on the pod in the meantime is still filed as a conflict, never overwritten. An
+edit that could not be sent, offline for instance, is sent by the next one.
+
+There is no polling, and a scoped sync pulls nothing, so pod-side changes arrive on the next
+full sync: at startup, or when you select **Sync now**.
 
 A sync you start (ribbon, command, **Sync now**) shows a notice while it works, then its
 counts. An automatic run shows its outcome only when it differs from the last one shown, so
@@ -555,6 +563,16 @@ that refuses its listing:
 
 ```bash
 POD_URL=… POD_ID=… POD_SECRET=… node test/walk.mjs
+```
+
+Scoped syncs — writes an `sc-scratch/` tree. Checks that a sync after changes sends
+nothing when nothing changed, lists only the edited note's folder, pulls nothing, still
+files a conflict when the pod changed too, pushes into a folder the pod lacks, pushes a
+deletion, sends an edit that failed offline on the next run, and leaves a synced note
+whose folder 404s for a full run:
+
+```bash
+POD_URL=… POD_ID=… POD_SECRET=… node test/scoped.mjs
 ```
 
 The sync log — writes `sl-*` resources. Checks that pushes and pod deletions are

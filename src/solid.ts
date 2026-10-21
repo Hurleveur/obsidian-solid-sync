@@ -347,6 +347,25 @@ export async function listContainer(
 const WALK_CONCURRENCY = 8;
 
 /**
+ * Lists several containers, a few at a time, settled in the order given. One listing
+ * is a full round trip, and a slow pod makes dozens of them in a row the whole wait.
+ */
+export async function listAll(
+	fetcher: Fetcher,
+	urls: string[],
+): Promise<PromiseSettledResult<Awaited<ReturnType<typeof listContainer>>>[]> {
+	const listings: PromiseSettledResult<Awaited<ReturnType<typeof listContainer>>>[] = [];
+	for (let i = 0; i < urls.length; i += WALK_CONCURRENCY) {
+		listings.push(
+			...(await Promise.allSettled(
+				urls.slice(i, i + WALK_CONCURRENCY).map((url) => listContainer(fetcher, url)),
+			)),
+		);
+	}
+	return listings;
+}
+
+/**
  * Walks a container recursively. Unreadable sub-containers are reported, not fatal,
  * with why: an HTTP status the pod answered, or the network error that stopped it.
  * `canWrite` describes the root — permissions can differ per sub-container, but the
@@ -366,18 +385,10 @@ export async function walk(
 	const seen = new Set(level);
 	let canWrite: boolean | undefined;
 
-	// One listing is a full round trip, and a slow pod makes dozens of them in a row
-	// the whole wait. A level's listings go out together, a few at a time, and are
-	// read back in queue order, so the result is exactly the one-by-one walk's.
+	// A level's listings go out together and are read back in queue order, so the
+	// result is exactly the one-by-one walk's.
 	while (level.length) {
-		const listings: PromiseSettledResult<Awaited<ReturnType<typeof listContainer>>>[] = [];
-		for (let i = 0; i < level.length; i += WALK_CONCURRENCY) {
-			listings.push(
-				...(await Promise.allSettled(
-					level.slice(i, i + WALK_CONCURRENCY).map((url) => listContainer(fetcher, url)),
-				)),
-			);
-		}
+		const listings = await listAll(fetcher, level);
 		const next: string[] = [];
 		listings.forEach((listing, i) => {
 			const url = level[i] as string;
