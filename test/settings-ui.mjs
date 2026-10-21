@@ -74,6 +74,7 @@ assert.deepEqual(
 		'Maximum file size (MB)',
 		'Ignore',
 		'Team members',
+		'Team sync',
 		'Team roster',
 		'Deleted notes',
 		'Delete on pod when a note is deleted',
@@ -115,6 +116,40 @@ await rows()
 	.changed('  https://pod.example/team/membres.ttl ');
 assert.equal(plugin.settings.roster, 'https://pod.example/team/membres.ttl');
 
+const confirmButton = (modal, accept) =>
+	modal.contentEl.settings[0].components.find(
+		(c) => (c.buttonText !== 'Cancel') === accept,
+	);
+
+// --- team sync is off until asked, and stopping it asks first ----------------
+// Adding other people's pods is a choice: nothing reads the team until the button.
+assert.equal(migrateSettings({}).teamSync, false, 'off by default');
+assert.equal(migrateSettings({ roster: 'https://x.example/m.ttl' }).teamSync, true, 'a roster saved before the switch keeps syncing');
+assert.equal(migrateSettings({ roster: 'https://x.example/m.ttl', teamSync: false }).teamSync, false);
+const teamButton = () =>
+	rows().find((s) => s.name === 'Team sync').components.find((c) => c.kind === 'button');
+plugin.settings.teamSync = false;
+tab.display();
+assert.equal(teamButton().buttonText, 'Sync my team');
+const modals = Modal.opened.length;
+await teamButton().clicked();
+assert.equal(Modal.opened.length, modals, 'logged out: a notice, no question');
+assert.equal(plugin.settings.teamSync, false);
+
+plugin.settings.teamSync = true;
+plugin.settings.team = ['neil https://c.example/neil/profile/card#me'];
+plugin.settings.pods.push({ url: 'https://c.example/neil/', folder: 'team/neil', roster: true });
+plugin.state['team/neil/n.md'] = {};
+tab.display();
+assert.equal(teamButton().buttonText, 'Stop');
+await teamButton().clicked();
+assert.equal(plugin.settings.teamSync, true, 'nothing stops before the confirm');
+await confirmButton(Modal.opened.at(-1), true).clicked();
+assert.equal(plugin.settings.teamSync, false);
+assert.deepEqual(plugin.settings.pods.map((p) => p.folder), ['Pod', 'Work'], 'the row team sync added goes, hand rows stay');
+assert.deepEqual(plugin.settings.team, []);
+assert.ok(!('team/neil/n.md' in plugin.state), 'its sync history goes with it');
+
 // The trash icon only asks — the pod goes when the confirm is accepted.
 const trash = (name) =>
 	rows()
@@ -123,10 +158,6 @@ const trash = (name) =>
 await trash('Pod 1').clicked();
 assert.equal(plugin.settings.pods.length, 2, 'nothing removed before the confirm');
 
-const confirmButton = (modal, accept) =>
-	modal.contentEl.settings[0].components.find(
-		(c) => (c.buttonText !== 'Cancel') === accept,
-	);
 await confirmButton(Modal.opened.at(-1), true).clicked();
 assert.equal(plugin.settings.pods.length, 1, 'accepted: the pod is removed');
 assert.equal(plugin.settings.pods[0].folder, 'Work', 'and it was the right one');

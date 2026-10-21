@@ -66,6 +66,7 @@ const plugin = {
 		maxFileMB: 10,
 		ignore: [],
 		members: [],
+		teamSync: true,
 		roster: ROSTER,
 		team: [],
 	},
@@ -146,6 +147,15 @@ PREFIX foaf: <http://xmlns.com/foaf/0.1/>
 	assert.equal((await member(`${OWN}tm-shared.md`, { headers: NO_CACHE })).status, 200, 'neil can read it');
 	assert.ok(!plugin.lastSkipped.some((l) => l.includes('tm-shared')), 'no sharing skip');
 	ok('share: [nick] grants the member');
+
+	// --- 2b. off means the roster is not read ------------------------------------
+	plugin.settings.teamSync = false;
+	assert.ok((await put(owner, ROSTER, backoffice([[owner.webId, 'owner']]))).ok);
+	await sync('team sync off');
+	assert.ok(rowFor('team/neil'), 'roster not read: neil still has his row');
+	assert.ok((await put(owner, ROSTER, backoffice([[owner.webId, 'owner'], [member.webId, 'neil']]))).ok);
+	plugin.settings.teamSync = true;
+	ok('team sync off reads no roster');
 
 	// --- 3. unreadable roster keeps the team -------------------------------------
 	const pods = JSON.stringify(plugin.settings.pods);

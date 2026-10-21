@@ -371,17 +371,18 @@ another app may have changed since.
 
 ## Team roster
 
-A team that keeps its member list on a pod gets everyone's pod synced without
-adding them one by one, and without any setting. Once you have logged in, the plugin
-finds the list the way [solid-backoffice](https://github.com/nicolasdb/solid-backoffice)
+A team that keeps its member list on a pod can have everyone's pod synced without
+adding them one by one. Log in, then select **Sync my team** under **Team sync**. The
+plugin finds the list the way [solid-backoffice](https://github.com/nicolasdb/solid-backoffice)
 does: your profile names each team you belong to (`org:memberOf`), and each team's
-`config.ttl` names its member list (`hs:roster`). A team your profile does not name
+`config.ttl` names its member list (`hs:roster`). It then shows the team's name and
+its members, and adds nothing until you confirm. A team your profile does not name
 can still be used by pasting its list's address into **Team roster**, for example
 `https://pod.example/team/membres.ttl`; that address then replaces the search.
 
 The list is the one solid-backoffice writes when an admin accepts someone: a
 `foaf:member` line naming each person's WebID, and a `foaf:nick` line giving each a
-short name. On every sync the plugin reads it and:
+short name. While team sync is on, every sync reads it and:
 
 - adds each member's pod as a row synced at `team/<short name>`, unless a row already
   syncs that pod;
@@ -394,7 +395,8 @@ like any other. What each pod lets you read or write is still up to that pod: be
 on the list grants nothing.
 
 Your own pod is on the list too, so a vault where you have only logged in gets a
-row for it at `team/<your short name>` as well.
+row for it at `team/<your short name>` as well. **Stop** turns team sync off: the rows
+it added go, their notes stay, and rows you added by hand are kept.
 
 The list is usually readable by members only. When it, your profile or a team's
 `config.ttl` cannot be read (offline, or you have not been accepted yet), the last
@@ -605,7 +607,8 @@ Team roster — writes `tm-*` resources in the first pod and rewrites the second
 top access list so the first account can read it, so both pods must be throwaway
 (two accounts in `seed.json`). Checks that the list's members arrive at
 `team/<short name>`, that a pod already in a row gets no second one, that short names
-work in `share:`, that an unreadable list keeps the rows, that a member removed
+work in `share:`, that with team sync off the list is not read, that an unreadable
+list keeps the rows, that a member removed
 from the list stops syncing while their notes stay, and that the list is found from
 the profile alone (it adds and removes an `org:memberOf` line in the first account's
 profile):

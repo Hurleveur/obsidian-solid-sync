@@ -486,11 +486,11 @@ export function staleBindings(
  * changes wait for the next full run (startup, or one the user starts).
  */
 export async function runSync(plugin: SolidSyncPlugin, scoped = false): Promise<string> {
-	const { issuer, clientId, clientSecret, roster } = plugin.settings;
+	const { issuer, clientId, clientSecret, roster, teamSync } = plugin.settings;
 	const first = plugin.settings.pods.find((p) => p.url && p.folder);
 	const authenticated = Boolean(clientId && clientSecret);
-	// Logged in with no rows yet, the rows come from the teams the profile names.
-	if (!first && !roster && !authenticated) {
+	// With team sync on and no rows yet, the rows come from the team.
+	if (!first && !(teamSync && (roster || authenticated))) {
 		throw new Error('Add a pod container URL and a vault folder first.');
 	}
 
@@ -514,7 +514,7 @@ export async function runSync(plugin: SolidSyncPlugin, scoped = false): Promise<
 		ignored: 0,
 	};
 
-	if (!scoped) await applyRoster(plugin, fetcher, report.skipped);
+	if (teamSync && !scoped) await applyRoster(plugin, fetcher, report.skipped);
 	const { pods } = plugin.settings;
 	const configured = pods.filter((p) => p.url && p.folder);
 

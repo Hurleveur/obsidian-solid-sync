@@ -1,6 +1,7 @@
 import { App, Modal, Notice, PluginSettingTab, Setting, setIcon } from 'obsidian';
 import type SolidSyncPlugin from './main';
-import { createClientCredentials } from './solid';
+import { createClientCredentials, createFetcher } from './solid';
+import { findTeam, setTeam } from './team';
 import {
 	deletedLocally,
 	folderClash,
@@ -42,6 +43,8 @@ export interface SolidSyncSettings {
 	ignore: string[];
 	/** `name WebID` per line: who a note's `share` and `share-write` may name. */
 	members: string[];
+	/** Whether the team's member pods are synced at `team/<nick>`. Off until asked. */
+	teamSync: boolean;
 	/** A collective's `membres.ttl`, used instead of the ones the profile's teams name. */
 	roster: string;
 	/** `nick WebID` per member, from the last roster read. Discovered, never set by hand. */
@@ -61,6 +64,7 @@ export const DEFAULT_SETTINGS: SolidSyncSettings = {
 	maxFileMB: 10,
 	ignore: [],
 	members: [],
+	teamSync: false,
 	roster: '',
 	team: [],
 };
@@ -87,6 +91,8 @@ export function migrateSettings(
 	if (!Array.isArray(settings.ignore)) settings.ignore = [];
 	if (!Array.isArray(settings.members)) settings.members = [];
 	if (!Array.isArray(settings.team)) settings.team = [];
+	// Before the switch existed, filling in a roster was turning team sync on.
+	if (saved.teamSync === undefined) settings.teamSync = Boolean(settings.roster);
 	if (podUrl && !settings.pods.length) {
 		settings.pods = [{ url: podUrl, folder: folder ?? 'Pod' }];
 		settings.issuer ||= new URL(podUrl).origin;
@@ -242,6 +248,53 @@ export class SolidSyncSettingTab extends PluginSettingTab {
 		private plugin: SolidSyncPlugin,
 	) {
 		super(app, plugin);
+	}
+
+	/** Reads the team first, so turning it on is agreeing to a list of people. */
+	private async startTeam() {
+		const { issuer, clientId, clientSecret, roster } = this.plugin.settings;
+		if (!clientId || !clientSecret) {
+			new Notice('Log in first: your profile says which team you are in.');
+			return;
+		}
+		let found: Awaited<ReturnType<typeof findTeam>>;
+		try {
+			found = await findTeam(await createFetcher(issuer, clientId, clientSecret), roster);
+		} catch (e) {
+			new Notice(`Could not read your team: ${(e as Error).message}`);
+			return;
+		}
+		if (!found.members.length) {
+			new Notice('Your profile names no team with a member list.');
+			return;
+		}
+		const nicks = found.members.map((m) => m.nick).join(', ');
+		new ConfirmModal(
+			this.app,
+			`Sync ${found.names.join(', ')}?`,
+			`Adds the pods of its ${found.members.length} members (${nicks}) at team/<their short name>, unless a row already syncs one, and keeps them in step: whoever joins is added, whoever leaves stops syncing. Each pod still decides what you may read there.`,
+			'Sync my team',
+			async () => {
+				await this.set('teamSync', true);
+				this.display();
+				await this.plugin.sync(true);
+				this.display();
+			},
+		).open();
+	}
+
+	private stopTeam() {
+		new ConfirmModal(
+			this.app,
+			'Stop syncing your team?',
+			"Removes the rows team sync added. Their notes stay in the vault; rows you added by hand are kept.",
+			'Stop',
+			async () => {
+				await this.set('teamSync', false);
+				await setTeam(this.plugin, []);
+				this.display();
+			},
+		).open();
 	}
 
 	private async set<K extends keyof SolidSyncSettings>(
@@ -595,10 +648,24 @@ export class SolidSyncSettingTab extends PluginSettingTab {
 					});
 			});
 
+		const { teamSync, team } = this.plugin.settings;
+		new Setting(containerEl)
+			.setName('Team sync')
+			.setDesc(
+				teamSync
+					? `On: ${team.length} members (${team.map((l) => l.split(' ')[0]).join(', ')}). Each sync adds whoever joined your team at team/<their short name> and stops syncing whoever left; their notes stay. share: can name them.`
+					: "Off. Sync my team reads the teams your profile says you belong to, shows who is in them, and asks before adding their pods.",
+			)
+			.addButton((btn) =>
+				btn
+					.setButtonText(teamSync ? 'Stop' : 'Sync my team')
+					.onClick(() => void (teamSync ? this.stopTeam() : this.startTeam())),
+			);
+
 		new Setting(containerEl)
 			.setName('Team roster')
 			.setDesc(
-				"Leave empty to use the teams your profile says you belong to: each sync follows them to their member lists, adds each member's pod at team/<their short name>, and lets share: name them. A member no longer listed stops syncing; their notes stay. Fill in a member list (a membres.ttl) only for a team your profile does not name.",
+				'Optional. A member list (a membres.ttl) to use instead of the teams your profile names.',
 			)
 			.addText((t) =>
 				t

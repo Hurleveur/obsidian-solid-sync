@@ -155,29 +155,53 @@ async function readTriples(fetcher: Fetcher, url: string): Promise<[string, stri
 }
 
 /**
- * The roster of each collective the profile says this WebID belongs to. A
- * collective whose config names no roster is left out; one that cannot be read
- * throws, since leaving it out would read as having left it.
+ * The roster of each collective the profile says this WebID belongs to, with the
+ * collective's `foaf:name` when it has one. A collective whose config names no
+ * roster is left out; one that cannot be read throws, since leaving it out would
+ * read as having left it.
  * shortcut: the profile goes through the roster's small Turtle reader, so a profile
- * with blank nodes (other providers) gives a skip line every run; take `n3` then.
+ * with blank nodes (other providers) cannot be read; take `n3` then.
  */
 export async function discoverRosters(
 	fetcher: Fetcher,
 	webId: string,
-): Promise<{ group: string; roster: string }[]> {
+): Promise<{ group: string; roster: string; name?: string }[]> {
 	const docOf = (iri: string) => iri.replace(/#.*/, '');
 	const profile = await readTriples(fetcher, docOf(webId));
 	const groups = new Set(
 		profile.filter(([s, p]) => s === webId && p === MEMBER_OF).map(([, , o]) => o),
 	);
-	const found: { group: string; roster: string }[] = [];
+	const found: { group: string; roster: string; name?: string }[] = [];
 	for (const group of groups) {
 		if (!/^https?:\/\//.test(group)) continue;
 		const config = await readTriples(fetcher, docOf(group));
-		const roster = config.find(([s, p]) => s === group && p === HS_ROSTER)?.[2];
-		if (roster && /^https?:\/\//.test(roster)) found.push({ group, roster });
+		const about = (p: string) => config.find(([s, q]) => s === group && q === p)?.[2];
+		const roster = about(HS_ROSTER);
+		if (roster && /^https?:\/\//.test(roster)) found.push({ group, roster, name: about(`${FOAF}name`) });
 	}
 	return found;
+}
+
+/**
+ * Everyone on the team: the `roster` address if one is set, otherwise the rosters
+ * of the profile's collectives. `names` says where they came from, for the user.
+ * Throws when any of it cannot be read.
+ */
+export async function findTeam(
+	fetcher: Fetcher,
+	roster: string,
+): Promise<{ names: string[]; members: Member[] }> {
+	if (!roster && !fetcher.webId) return { names: [], members: [] };
+	const rosters = roster
+		? [{ roster, group: undefined, name: roster }]
+		: await discoverRosters(fetcher, fetcher.webId as string);
+	const members: Member[] = [];
+	for (const r of rosters) {
+		for (const m of await readRoster(fetcher, r.roster, r.group)) {
+			if (!members.some((k) => k.webId === m.webId)) members.push(m);
+		}
+	}
+	return { names: rosters.map((r) => r.name ?? r.group ?? r.roster), members };
 }
 
 /**
@@ -213,39 +237,18 @@ export const memberLines = (members: Member[]) =>
 	members.map(({ nick, webId }) => `${nick} ${webId}`);
 
 /**
- * Reads the rosters and brings the pod rows and share names in line with them. Any
- * unreadable one (offline, not a member yet) keeps the last rows and names: a
- * failed read says nothing about who left, and dropping rows on it would stop
- * syncing everyone's pod at once. Without the setting or a WebID there is no
- * roster to look for, and nothing changes.
+ * Brings the pod rows and share names in line with `members`: `[]` removes every
+ * row the roster added, which is how team sync is turned off. Notes stay.
  */
-export async function applyRoster(
-	plugin: SolidSyncPlugin,
-	fetcher: Fetcher,
-	skipped: string[],
-): Promise<void> {
-	const { roster } = plugin.settings;
-	if (!roster && !fetcher.webId) return;
-	const members: Member[] = [];
-	try {
-		const rosters = roster
-			? [{ roster, group: undefined }]
-			: await discoverRosters(fetcher, fetcher.webId as string);
-		for (const r of rosters) {
-			for (const m of await readRoster(fetcher, r.roster, r.group)) {
-				if (!members.some((k) => k.webId === m.webId)) members.push(m);
-			}
-		}
-	} catch (e) {
-		skipped.push(`team roster ${roster || 'from your profile'} (${(e as Error).message}; last team kept)`);
-		return;
-	}
+export async function setTeam(plugin: SolidSyncPlugin, members: Member[]): Promise<string[]> {
 	const merged = mergeRoster(plugin.settings.pods, members);
-	skipped.push(...merged.skipped);
 	const team = memberLines(members);
-	// Every logged-in run gets here, most with no team: write settings only on a change.
-	if (!merged.removed.length && merged.pods.length === plugin.settings.pods.length &&
-		team.join('\n') === (plugin.settings.team ?? []).join('\n')) return;
+	// Every full run with team sync on gets here: write settings only on a change.
+	const same =
+		!merged.removed.length &&
+		merged.pods.length === plugin.settings.pods.length &&
+		team.join('\n') === (plugin.settings.team ?? []).join('\n');
+	if (same) return merged.skipped;
 	plugin.settings.pods = merged.pods;
 	plugin.settings.team = team;
 	// The same as removing a row by hand: the notes stay, their sync history goes.
@@ -255,4 +258,28 @@ export async function applyRoster(
 		}
 	}
 	await plugin.saveSettings();
+	return merged.skipped;
+}
+
+/**
+ * Reads the team and applies it. An unreadable roster, profile or config (offline,
+ * not a member yet) keeps the last rows and names: a failed read says nothing about
+ * who left, and dropping rows on it would stop syncing everyone's pod at once.
+ */
+export async function applyRoster(
+	plugin: SolidSyncPlugin,
+	fetcher: Fetcher,
+	skipped: string[],
+): Promise<void> {
+	const { roster } = plugin.settings;
+	// Logged out, there is no profile to read: an empty team here would drop every row.
+	if (!roster && !fetcher.webId) return;
+	let members: Member[];
+	try {
+		({ members } = await findTeam(fetcher, roster));
+	} catch (e) {
+		skipped.push(`team roster ${roster || 'from your profile'} (${(e as Error).message}; last team kept)`);
+		return;
+	}
+	skipped.push(...(await setTeam(plugin, members)));
 }

@@ -239,6 +239,13 @@ Alexandre was accepted by 2026-10-21: `alex/profile/card#me` reads `membres.ttl`
 `chabi-vdb` (`chabivdb/`) and `alex`. The `nicolasdb/` hand row was repointed to
 `hyperscope_ndb/` before then.
 
+Changed the same day, at Alexandre's request: team sync is a switch, off by default.
+**Sync my team** (settings, Team sync) reads the team, names it and its members in a
+confirm, and only then turns it on; **Stop** turns it off and removes the rows it
+added (`setTeam(plugin, [])`), notes kept. A saved roster from before the switch
+reads as on. Without the switch, logging in would have added other people's pods
+on the next sync, unasked.
+
 Built 2026-10-21: the roster is found, not typed. A logged-in run reads the profile's
 `org:memberOf`, each collective's `config.ttl`, and its `hs:roster`, the walk the
 backoffice's `loadCollective` makes; the Team roster setting, when filled, replaces
@@ -246,7 +253,8 @@ it. Members must belong to that collective (`foaf:member` from its IRI). Any of 
 three documents unreadable keeps the last team; a profile naming no collective drops
 the roster's rows. Settings are written only when the team changed. Login falls back
 to the stored `issuer`, so a vault template carrying only `issuer` needs no row:
-logging in brings the user's own pod at `team/<nick>` and every member's. Checked
+logging in, then Sync my team, brings the user's own pod at `team/<nick>` and every
+member's. Checked
 locally (`test/team.mjs` §5, seen failing without the walk and without the collective
 check) and live 2026-10-21 against `pod.nicolasdb.eu` (read only): alex's profile led
 to HyperScope's roster and its three nicks.
