@@ -56,8 +56,11 @@ Put both in `<vault>/.obsidian/plugins/solid-sync/`, then refresh the list under
    whole vault — see [The whole vault as one pod](#the-whole-vault-as-one-pod), and
    set **Ignore** first if you go that way.
 2. Public pods work immediately, read-only. For your own pod, select **Log in** and
-   enter your pod account email and password. This mints a client-credentials token
-   through the pod's account API; the password is used once and never stored.
+   enter your server (`https://pod.example.eu`, filled in from the first pod if there
+   is one), email and password. This mints a client-credentials token through the
+   server's account API; the password is used once and never stored. Logging in needs
+   no pod row, so in a team you can log in first and let [Team sync](#team-roster)
+   add the pods.
 3. Run **Sync now** from the command palette, or select the ribbon icon.
 4. Add more pods the same way. Give each its own folder — the same folder twice is
    refused, because a note in two pods' folders would be pushed to the wrong one.

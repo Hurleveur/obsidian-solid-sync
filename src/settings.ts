@@ -108,10 +108,10 @@ class LoginModal extends Modal {
 	constructor(
 		app: App,
 		private issuer: string,
-		private onDone: (creds: {
-			clientId: string;
-			clientSecret: string;
-		}) => Promise<void>,
+		private onDone: (
+			creds: { clientId: string; clientSecret: string },
+			issuer: string,
+		) => Promise<void>,
 	) {
 		super(app);
 	}
@@ -120,9 +120,15 @@ class LoginModal extends Modal {
 		const { contentEl } = this;
 		this.setTitle('Log in to your pod');
 		contentEl.createEl('p', {
-			text: `Creates a token for ${this.issuer}. Your password is used once and never stored.`,
+			text: 'Creates a token on the server that holds your account. Your password is used once and never stored.',
 		});
 
+		new Setting(contentEl).setName('Server').addText((t) =>
+			t
+				.setPlaceholder('https://pod.example.eu')
+				.setValue(this.issuer)
+				.onChange((v) => (this.issuer = v.trim())),
+		);
 		new Setting(contentEl)
 			.setName('Email')
 			.addText((t) => t.onChange((v) => (this.email = v)));
@@ -136,14 +142,23 @@ class LoginModal extends Modal {
 				.setButtonText('Create token')
 				.setCta()
 				.onClick(async () => {
+					let issuer: string;
+					try {
+						const url = new URL(this.issuer);
+						if (!/^https?:$/.test(url.protocol)) throw new Error();
+						issuer = url.origin;
+					} catch {
+						new Notice('Enter the server address, like https://pod.example.eu.');
+						return;
+					}
 					btn.setDisabled(true).setButtonText('Working…');
 					try {
 						const creds = await createClientCredentials(
-							this.issuer,
+							issuer,
 							this.email,
 							this.password,
 						);
-						await this.onDone(creds);
+						await this.onDone(creds, issuer);
 						new Notice('Solid credentials saved.');
 						this.close();
 					} catch (e) {
@@ -507,20 +522,18 @@ export class SolidSyncSettingTab extends PluginSettingTab {
 				btn.setButtonText('Log in').onClick(() => {
 					// Your account lives on one server; that one mints the token
 					// every pod in the list is then addressed with.
+					// A guess for the server box, from whatever is already set.
 					const { issuer: known, pods, roster } = this.plugin.settings;
 					const url = pods[0]?.url || roster || known;
-					if (!url) {
-						new Notice('Add your own pod or a team roster first.');
-						return;
-					}
-					const issuer = new URL(url).origin;
-					new LoginModal(this.app, issuer, async (creds) => {
+					const guess = url ? new URL(url).origin : '';
+					new LoginModal(this.app, guess, async (creds, issuer) => {
 						await this.set('issuer', issuer);
 						await this.set('clientId', creds.clientId);
 						await this.set('clientSecret', creds.clientSecret);
 						this.display();
-						// Logging in is when notes are expected to appear.
-						await this.plugin.sync(true);
+						// Logging in is when notes are expected to appear, if any can.
+						const { pods, teamSync } = this.plugin.settings;
+						if (pods.length || teamSync) await this.plugin.sync(true);
 					}).open();
 				}),
 			)

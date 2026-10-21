@@ -173,4 +173,36 @@ confirmButton(Modal.opened.at(-1), false).clicked();
 assert.equal(plugin.settings.pods.length, 1);
 assert.equal(plugin.settings.pods[0].folder, 'Work');
 
+// --- logging in needs only a server, not a pod row ----------------------------
+// The team comes from the login, so a fresh vault must be able to log in first.
+const bare = {
+	...plugin,
+	app: { vault: { getFiles: () => [] } },
+	state: {},
+	settings: migrateSettings({}),
+};
+const bareTab = new SolidSyncSettingTab(bare.app, bare);
+bareTab.display();
+const modalCount = Modal.opened.length;
+await bareTab.containerEl.settings
+	.find((s) => s.name === 'Credentials')
+	.components.find((c) => c.buttonText === 'Log in')
+	.clicked();
+assert.equal(Modal.opened.length, modalCount + 1, 'no pod: the login still opens');
+const login = Modal.opened.at(-1);
+const server = login.contentEl.settings.find((s) => s.name === 'Server').components[0];
+assert.equal(server.value, '', 'nothing to guess from');
+await server.changed('ftp://pod.example');
+await login.contentEl.settings.at(-1).components[0].clicked();
+assert.equal(bare.settings.issuer, '', 'a server that is no web address mints nothing');
+await rows()
+	.find((s) => s.name === 'Credentials')
+	.components.find((c) => c.buttonText === 'Log in')
+	.clicked();
+assert.equal(
+	Modal.opened.at(-1).contentEl.settings.find((s) => s.name === 'Server').components[0].value,
+	'https://b.example',
+	"with a pod, its server is the guess",
+);
+
 console.log('settings ui: all checks passed');
